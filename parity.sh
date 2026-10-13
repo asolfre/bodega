@@ -4,8 +4,9 @@ set -u
 export HOMEBREW_NO_AUTO_UPDATE=1
 T="${TMPDIR:-/tmp}"
 UI="$1"
-{ brew list --formula --versions | awk '{print "formula\t"$1"\t"$NF}'
-  brew list --cask --versions | awk '{print "cask\t"$1"\t"$NF}'; } | sort > "$T/cli.tsv"
+# Full version field: several kegs can be installed at once (e.g. "librsvg 2.63.2 2.62.1").
+{ brew list --formula --versions | sed 's/^\([^ ]*\) /formula	\1	/'
+  brew list --cask --versions | sed 's/^\([^ ]*\) /cask	\1	/'; } | sort > "$T/cli.tsv"
 cut -f1-3 "$UI" | sort > "$T/ui.tsv"
 brew outdated -q | sed 's#.*/##' | sort > "$T/cli-out"
 awk -F'\t' '$4!=""{print $2}' "$UI" | sort > "$T/ui-out"

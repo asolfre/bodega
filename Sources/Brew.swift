@@ -83,7 +83,7 @@ enum Brew {
             out.split(separator: "\n").compactMap { line in
                 let parts = line.split(separator: " ").map(String.init)
                 guard let name = parts.first else { return nil }
-                return Package(name: name, version: parts.dropFirst().last ?? "?", kind: kind,
+                return Package(name: name, version: parts.dropFirst().joined(separator: " "), kind: kind,
                                latest: latest["\(kind.rawValue):\(name)"])
             }
         }
