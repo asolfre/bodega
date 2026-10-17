@@ -15,4 +15,12 @@ echo "ui:  $(wc -l < "$T/ui.tsv") packages, $(wc -l < "$T/ui-out") outdated"
 ok=0
 diff "$T/cli.tsv" "$T/ui.tsv" && echo "LIST+VERSIONS MATCH" || ok=1
 diff "$T/cli-out" "$T/ui-out" && echo "OUTDATED MATCH" || ok=1
+# Active version of each formula with several kegs, from the opt link (independent of brew list).
+P="$(brew --prefix)"
+brew list --formula --versions | awk 'NF>2{print $1}' | while read -r n; do
+  printf '%s\t%s\n' "$n" "$(basename "$(readlink "$P/opt/$n")")"
+done | sort > "$T/cli-active"
+awk -F'\t' '$1=="formula" && split($3,v," ")>1 {print $2"\t"$5}' "$UI" | sort > "$T/ui-active"
+echo "multi-version formulae: $(wc -l < "$T/cli-active")"
+diff "$T/cli-active" "$T/ui-active" && echo "ACTIVE VERSIONS MATCH" || ok=1
 exit $ok

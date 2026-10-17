@@ -18,7 +18,9 @@ final class BrewModel: ObservableObject {
             packages = try await Brew.installed()
             loadError = nil
             if let dumpPath {
-                let lines = packages.map { "\($0.kind.rawValue)\t\($0.name)\t\($0.version)\t\($0.latest ?? "")" }
+                let lines = packages.map {
+                    "\($0.kind.rawValue)\t\($0.name)\t\($0.version)\t\($0.latest ?? "")\t\($0.active ?? "")"
+                }
                 try? (lines.joined(separator: "\n") + "\n").write(toFile: dumpPath, atomically: true, encoding: .utf8)
             }
         } catch {
@@ -72,7 +74,11 @@ struct ContentView: View {
                 Table(shown) {
                     TableColumn("Name", value: \.name)
                     TableColumn("Type") { Text($0.kind.rawValue) }.width(70)
-                    TableColumn("Installed", value: \.version).width(120)
+                    TableColumn("Installed") { p in
+                        let v = p.displayVersions
+                        (Text(v.first ?? "")
+                         + Text(v.count > 1 ? " " + v.dropFirst().joined(separator: " ") : "").foregroundColor(.secondary))
+                    }.width(120)
                     TableColumn("Latest") { p in
                         Text(p.latest ?? "—").foregroundStyle(p.latest == nil ? .secondary : Color.orange)
                     }.width(120)

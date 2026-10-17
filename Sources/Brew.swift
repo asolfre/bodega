@@ -3,10 +3,19 @@ import Foundation
 struct Package: Identifiable, Hashable {
     enum Kind: String { case formula, cask }
     let name: String
-    let version: String
+    /// Every installed version, in the order `brew list --versions` prints them (not sorted).
+    let versions: [String]
     let kind: Kind
     var latest: String?
+    /// The version in use: the target of `<prefix>/opt/<name>` for formulae. Nil when unknown.
+    var active: String?
     var id: String { "\(kind.rawValue):\(name)" }
+    var version: String { versions.joined(separator: " ") }
+    /// Active version first, then the others, so the version in use is always the first one shown.
+    var displayVersions: [String] {
+        guard let active, versions.contains(active) else { return versions }
+        return [active] + versions.filter { $0 != active }
+    }
 }
 
 struct BrewResult {
@@ -69,25 +78,39 @@ enum Brew {
         let (f, c, outdated) = try await (formulae, casks, outJ)
         guard f.status == 0, c.status == 0 else { throw BrewError(message: f.output + c.output) }
 
-        // Outdated names can be tap-qualified (datadog-labs/pack/pup); brew list shows the short name.
+        let latest = parseOutdated(outdated)
+        let optDir = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("opt").path
+        var pkgs = parseList(f.output, .formula, latest: latest) + parseList(c.output, .cask, latest: latest)
+        for i in pkgs.indices where pkgs[i].kind == .formula {
+            let link = try? FileManager.default.destinationOfSymbolicLink(atPath: "\(optDir)/\(pkgs[i].name)")
+            pkgs[i].active = link.map { ($0 as NSString).lastPathComponent }
+        }
+        return pkgs.sorted { $0.name < $1.name }
+    }
+
+    /// `brew outdated --json=v2` → "kind:shortname" → newest version.
+    /// Outdated names can be tap-qualified (datadog-labs/pack/pup); brew list shows the short name.
+    static func parseOutdated(_ json: [String: Any]) -> [String: String] {
         var latest: [String: String] = [:]
         for (kind, key) in [("formula", "formulae"), ("cask", "casks")] {
-            for o in outdated[key] as? [[String: Any]] ?? [] {
+            for o in json[key] as? [[String: Any]] ?? [] {
                 if let n = o["name"] as? String, let short = n.split(separator: "/").last {
                     latest["\(kind):\(short)"] = o["current_version"] as? String
                 }
             }
         }
+        return latest
+    }
 
-        func parse(_ out: String, _ kind: Package.Kind) -> [Package] {
-            out.split(separator: "\n").compactMap { line in
-                let parts = line.split(separator: " ").map(String.init)
-                guard let name = parts.first else { return nil }
-                return Package(name: name, version: parts.dropFirst().joined(separator: " "), kind: kind,
-                               latest: latest["\(kind.rawValue):\(name)"])
-            }
+    /// One `brew list --versions` line per package: "name v1 v2 …".
+    static func parseList(_ out: String, _ kind: Package.Kind, latest: [String: String]) -> [Package] {
+        out.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: " ").map(String.init)
+            guard let name = parts.first else { return nil }
+            return Package(name: name, versions: Array(parts.dropFirst()), kind: kind,
+                           latest: latest["\(kind.rawValue):\(name)"])
         }
-        return (parse(f.output, .formula) + parse(c.output, .cask)).sorted { $0.name < $1.name }
     }
 }
 

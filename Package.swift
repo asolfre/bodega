@@ -4,5 +4,8 @@ import PackageDescription
 let package = Package(
     name: "Bodega",
     platforms: [.macOS(.v14)],
-    targets: [.executableTarget(name: "Bodega", path: "Sources")]
+    targets: [
+        .executableTarget(name: "Bodega", path: "Sources"),
+        .testTarget(name: "BodegaTests", dependencies: ["Bodega"]),
+    ]
 )

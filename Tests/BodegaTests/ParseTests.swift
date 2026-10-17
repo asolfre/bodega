@@ -1,0 +1,35 @@
+import Testing
+@testable import Bodega
+
+@Suite struct ParseTests {
+    @Test func severalVersionsKeepBrewOrder() {
+        let p = Brew.parseList("openssl@3 3.6.4 3.6.3 3.6.5\njq 1.8.1\n", .formula, latest: [:])
+        #expect(p.map(\.name) == ["openssl@3", "jq"])
+        #expect(p[0].versions == ["3.6.4", "3.6.3", "3.6.5"])
+        #expect(p[0].version == "3.6.4 3.6.3 3.6.5")
+    }
+
+    @Test func activeVersionShownFirst() {
+        var p = Brew.parseList("openssl@3 3.6.4 3.6.3 3.6.5", .formula, latest: [:])[0]
+        p.active = "3.6.5"
+        #expect(p.displayVersions == ["3.6.5", "3.6.4", "3.6.3"])
+        p.active = "9.9.9"  // a dangling link must not invent a version
+        #expect(p.displayVersions == ["3.6.4", "3.6.3", "3.6.5"])
+    }
+
+    @Test func emptyListOutput() {
+        #expect(Brew.parseList("", .cask, latest: [:]).isEmpty)
+    }
+
+    @Test func tapQualifiedOutdatedMatchesShortName() {
+        let json: [String: Any] = [
+            "formulae": [["name": "datadog-labs/pack/pup", "current_version": "2.0.0"]],
+            "casks": [["name": "headlamp", "current_version": "0.46.0"]],
+        ]
+        let latest = Brew.parseOutdated(json)
+        let p = Brew.parseList("pup 1.26.0", .formula, latest: latest)
+        #expect(p[0].latest == "2.0.0")
+        #expect(latest["cask:headlamp"] == "0.46.0")
+        #expect(latest["formula:headlamp"] == nil)
+    }
+}
