@@ -27,27 +27,42 @@ enum Brew {
     static let path = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
         .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/brew"
 
-    /// Runs brew off the main thread; stdout and stderr are merged so the log shows everything brew says.
-    static func run(_ args: [String]) async -> BrewResult {
-        await Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: path)
-            p.arguments = args
-            var env = ProcessInfo.processInfo.environment
-            env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
-            env["HOMEBREW_NO_ENV_HINTS"] = "1"
-            env["HOMEBREW_NO_COLOR"] = "1"
-            p.environment = env
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            p.standardError = pipe
-            do { try p.run() } catch {
-                return BrewResult(status: -1, output: "Failed to launch \(path): \(error)")
+    /// Runs brew; stdout and stderr are merged so the log shows everything brew says.
+    /// `onStart` hands out the process (for Cancel); `onLine` gets each line as brew prints it.
+    static func run(_ args: [String],
+                    onStart: @MainActor (Process) -> Void = { _ in },
+                    onLine: @MainActor (String) -> Void = { _ in }) async -> BrewResult {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        env["HOMEBREW_NO_ENV_HINTS"] = "1"
+        env["HOMEBREW_NO_COLOR"] = "1"
+        p.environment = env
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        // Set before run() so an early exit cannot be missed; AsyncStream buffers the value.
+        let exited = AsyncStream<Int32> { c in
+            p.terminationHandler = { c.yield($0.terminationStatus); c.finish() }
+        }
+        do { try p.run() } catch {
+            return BrewResult(status: -1, output: "Failed to launch \(path): \(error)")
+        }
+        await onStart(p)
+        var lines: [String] = []
+        do {
+            for try await line in pipe.fileHandleForReading.bytes.lines {
+                lines.append(line)
+                await onLine(line)
             }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            return BrewResult(status: p.terminationStatus, output: String(decoding: data, as: UTF8.self))
-        }.value
+        } catch {
+            lines.append("Reading brew output failed: \(error)")
+        }
+        var status: Int32 = -1
+        for await s in exited { status = s }
+        return BrewResult(status: status, output: lines.joined(separator: "\n"))
     }
 
     /// stdout only, for JSON commands (brew prints progress on stderr).

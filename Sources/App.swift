@@ -7,11 +7,14 @@ final class BrewModel: ObservableObject {
     @Published var log = ""
     @Published var busy: String?
     @Published var loadError: String?
+    @Published var running: Process?
+    private var cancelled = false
 
     /// When set, every refresh writes the listed packages here so the UI state can be diffed against `brew list`.
     let dumpPath = ProcessInfo.processInfo.environment["BODEGA_DUMP"]
 
     func refresh() async {
+        guard busy == nil else { return }
         busy = "Loading installed packages…"
         defer { busy = nil }
         do {
@@ -29,15 +32,58 @@ final class BrewModel: ObservableObject {
     }
 
     func perform(_ verb: String, _ name: String, cask: Bool) async {
+        guard busy == nil else { return }
         var args = [verb]
         if cask { args.append("--cask") }
         args.append(name)
-        busy = "brew \(args.joined(separator: " "))…"
-        log += "$ brew \(args.joined(separator: " "))\n"
-        let r = await Brew.run(args)
-        log += r.output + (r.status == 0 ? "✔ done\n\n" : "✘ exit \(r.status)\n\n")
+        let command = "brew \(args.joined(separator: " "))"
+        busy = "\(command)…"
+        cancelled = false
+        show("$ \(command)")
+        Self.writeLog("$ \(command)")
+        let r = await Brew.run(args, onStart: { self.running = $0 }, onLine: { line in
+            self.show(line)
+            Self.writeLog("  \(line)")
+        })
+        running = nil
+        let end = cancelled ? "cancelled (exit \(r.status))" : "exit \(r.status)"
+        show((r.status == 0 && !cancelled ? "✔ " : "✘ ") + end + "\n")
+        Self.writeLog(end)
         busy = nil
         await refresh()
+    }
+
+    /// Same as Ctrl-C in a terminal: brew gets SIGINT and cleans up its own half-done work.
+    func cancel() {
+        guard let running, running.isRunning else { return }
+        cancelled = true
+        running.interrupt()
+    }
+
+    private func show(_ line: String) {
+        log += line + "\n"
+        // ponytail: keeps only the newest ~200 KB on screen; Bodega.log has everything.
+        if log.utf8.count > 200_000 { log = String(log.suffix(150_000)) }
+    }
+
+    static let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Bodega.log")
+    private static let stamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// Every line gets its own time, so the file shows output arriving while brew ran.
+    private static func writeLog(_ text: String) {
+        let line = Data("[\(stamp.string(from: Date()))] \(text)\n".utf8)
+        if let h = try? FileHandle(forWritingTo: logURL) {
+            h.seekToEndOfFile()
+            h.write(line)
+            try? h.close()
+        } else {
+            try? line.write(to: logURL)
+        }
     }
 }
 
@@ -70,7 +116,12 @@ struct ContentView: View {
                     Button("Refresh") { Task { await model.refresh() } }
                         .disabled(model.busy != nil)
                 }
-                Text(status).font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                    if model.running != nil {
+                        Button("Cancel") { model.cancel() }.controlSize(.small)
+                    }
+                }
                 Table(shown) {
                     TableColumn("Name", value: \.name)
                     TableColumn("Type") { Text($0.kind.rawValue) }.width(70)
@@ -95,12 +146,16 @@ struct ContentView: View {
             .padding()
             .frame(minHeight: 300)
 
-            ScrollView {
-                Text(model.log.isEmpty ? "brew output appears here" : model.log)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(8)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(model.log.isEmpty ? "brew output appears here" : model.log)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(8)
+                    Color.clear.frame(height: 1).id("end")
+                }
+                .onChange(of: model.log) { proxy.scrollTo("end", anchor: .bottom) }
             }
             .frame(minHeight: 100)
         }
