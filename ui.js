@@ -10,7 +10,7 @@ function run(argv) {
   function find(target) {
     // Depth-first with early exit, sheets first; skip columns/scroll bars (they repeat every cell).
     // Search-sheet controls are only looked for in sheets: walking the 200+ row table takes minutes.
-    var sheetOnly = /^(install-|installed-|no-results|close-results)/.test(target);
+    var sheetOnly = /^(install-|installed-|no-results|close-results|upgrade-)/.test(target);
     var roots = [];
     proc.windows().forEach(function (w) { try { w.sheets().forEach(function (s) { roots.push(s); }); } catch (e) {} });
     if (!sheetOnly) proc.windows().forEach(function (w) { roots.push(w); });

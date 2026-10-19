@@ -10,6 +10,7 @@ final class BrewModel: ObservableObject {
     @Published var loadError: String?
     @Published var running: Process?
     @Published var cleanupPreview: CleanupPreview?
+    @Published var upgradePreview: UpgradePreview?
     private var cancelled = false
 
     /// When set, every refresh writes the listed packages here so the UI state can be diffed against `brew list`.
@@ -75,6 +76,16 @@ final class BrewModel: ObservableObject {
         cleanupPreview = Brew.parseCleanup(String(decoding: out, as: UTF8.self))
     }
 
+    /// The dialog lists what `brew upgrade --dry-run` says, not `brew outdated`: the dry run also shows
+    /// new dependencies (e.g. one you uninstalled) and which formulae would compile from source.
+    func previewUpgrade() async {
+        guard busy == nil else { return }
+        busy = "Checking what brew upgrade would do…"
+        let out = (try? await Brew.stdout(["upgrade", "--dry-run"]))?.1 ?? Data()
+        busy = nil
+        upgradePreview = Brew.parseUpgradeDryRun(String(decoding: out, as: UTF8.self))
+    }
+
     static let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/Bodega.log")
     private static let stamp: ISO8601DateFormatter = {
@@ -129,6 +140,9 @@ struct ContentView: View {
                     Button("Refresh") { Task { await model.refresh() } }
                         .disabled(model.busy != nil)
                         .accessibilityIdentifier("refresh-button")
+                    Button("Update all…") { Task { await model.previewUpgrade() } }
+                        .disabled(model.busy != nil)
+                        .accessibilityIdentifier("update-all-button")
                     Button("Clean up…") { Task { await model.previewCleanup() } }
                         .disabled(model.busy != nil)
                         .accessibilityIdentifier("cleanup-button")
@@ -194,6 +208,12 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { results != nil }, set: { if !$0 { results = nil } })) {
             SearchSheet(query: query, results: results ?? [], error: searchError) { results = nil }
                 .environmentObject(model)
+        }
+        .sheet(isPresented: Binding(get: { model.upgradePreview != nil }, set: { if !$0 { model.upgradePreview = nil } })) {
+            UpgradeSheet(preview: model.upgradePreview ?? UpgradePreview()) { confirmed in
+                model.upgradePreview = nil
+                if confirmed { Task { await model.perform(["upgrade"]) } }
+            }
         }
         .alert(model.cleanupPreview?.count == 0 ? "Nothing to clean up" : "Clean up?",
                isPresented: Binding(get: { model.cleanupPreview != nil }, set: { if !$0 { model.cleanupPreview = nil } }),
@@ -287,6 +307,56 @@ struct BodegaApp: App {
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         WindowGroup("Bodega") { ContentView().environmentObject(model) }
+    }
+}
+
+struct UpgradeSheet: View {
+    let preview: UpgradePreview
+    let done: (_ confirmed: Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(preview.upgrades.isEmpty ? "Everything is up to date" : "Update \(preview.upgrades.count) packages?")
+                .font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    section("Upgrades", preview.upgrades)
+                    section("New dependencies that would be installed", preview.newDependencies)
+                    if !preview.sourceBuilds.isEmpty {
+                        Text("Homebrew has no ready-made packages for this macOS version (Tier 3), so these "
+                             + "\(preview.sourceBuilds.count) formulae would compile from source. That can take "
+                             + "hours; Cancel in the main window stops it.")
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        section("Would build from source", preview.sourceBuilds)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 320)
+            HStack {
+                Spacer()
+                Button("Cancel") { done(false) }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("upgrade-cancel")
+                if !preview.upgrades.isEmpty {
+                    Button("Update all (\(preview.upgrades.count))") { done(true) }
+                        .accessibilityIdentifier("upgrade-confirm")
+                }
+            }
+        }
+        .padding()
+        .frame(width: 560)
+    }
+
+    @ViewBuilder
+    private func section(_ title: String, _ lines: [String]) -> some View {
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(title) (\(lines.count))").bold()
+                ForEach(lines, id: \.self) { Text($0).font(.system(.caption, design: .monospaced)) }
+            }
+        }
     }
 }
 

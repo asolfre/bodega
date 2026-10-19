@@ -63,6 +63,32 @@ import Testing
         #expect(none.count == 0 && none.summary == nil)
     }
 
+    @Test func upgradeDryRunSections() {
+        // Trimmed real `brew upgrade --dry-run` stdout from 2026-10-19 (hint lines kept on purpose).
+        let out = """
+        ==> Would install 3 dependencies:
+        cxxopts   3.3.1
+        corepack  0.36.0
+        esbuild   0.28.2
+        Some casks with `auto_updates true` or `version :latest` may still require `--greedy`,
+        `HOMEBREW_UPGRADE_GREEDY` or `HOMEBREW_UPGRADE_GREEDY_CASKS` to be upgraded.
+        Hide these hints with `HOMEBREW_NO_ENV_HINTS=1` (see `man brew`).
+        ==> Would upgrade 3 outdated packages
+        llvm@21                    21.1.8    -> 21.1.8_1
+        datadog-labs/pack/pup      1.26.0    -> 2.0.0
+        flyway                     13.10.0   -> 13.10.3 (323.8MB)
+        ==> 2 homebrew/core formulae that would build from source
+        llvm@21
+        node
+        """
+        let p = Brew.parseUpgradeDryRun(out)
+        #expect(p.newDependencies == ["cxxopts 3.3.1", "corepack 0.36.0", "esbuild 0.28.2"])
+        #expect(p.upgrades == ["llvm@21 21.1.8 -> 21.1.8_1", "datadog-labs/pack/pup 1.26.0 -> 2.0.0",
+                               "flyway 13.10.0 -> 13.10.3"])
+        #expect(p.sourceBuilds == ["llvm@21", "node"])
+        #expect(Brew.parseUpgradeDryRun("").upgrades.isEmpty)
+    }
+
     @Test func tapQualifiedOutdatedMatchesShortName() {
         let json: [String: Any] = [
             "formulae": [["name": "datadog-labs/pack/pup", "current_version": "2.0.0"]],

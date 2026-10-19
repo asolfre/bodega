@@ -40,6 +40,13 @@ struct CleanupPreview {
     let summary: String?
 }
 
+/// What `brew upgrade --dry-run` says a plain `brew upgrade` would do.
+struct UpgradePreview {
+    var upgrades: [String] = []        // "llvm@21 21.1.8 -> 21.1.8_1"
+    var newDependencies: [String] = [] // "esbuild 0.28.2"
+    var sourceBuilds: [String] = []    // "llvm@21"
+}
+
 enum Brew {
     /// `BODEGA_BREW` swaps in a stand-in script for tests (e.g. to see whether a confirmation fires).
     static let path = ProcessInfo.processInfo.environment["BODEGA_BREW"]
@@ -123,6 +130,34 @@ enum Brew {
     static func exactFirst(_ results: [SearchResult], _ query: String) -> [SearchResult] {
         let q = query.lowercased()
         return results.filter { $0.shortName.lowercased() == q } + results.filter { $0.shortName.lowercased() != q }
+    }
+
+    /// `brew upgrade --dry-run` stdout: "==> " section headers, then entries. Hint lines mixed into a
+    /// section ("Some casks with `auto_updates true` …") are skipped because they do not have an entry's shape.
+    static func parseUpgradeDryRun(_ out: String) -> UpgradePreview {
+        enum Section { case upgrades, dependencies, source }
+        var p = UpgradePreview()
+        var section: Section?
+        for line in parseNames(out) {
+            if line.hasPrefix("==>") {
+                section = line.contains("Would upgrade") ? .upgrades
+                    : line.contains("Would install") ? .dependencies
+                    : line.contains("build from source") ? .source : nil
+                continue
+            }
+            let words = line.split(separator: " ").map(String.init)
+            switch section {
+            case .upgrades where words.count >= 4 && words[2] == "->":
+                p.upgrades.append(words.prefix(4).joined(separator: " "))
+            case .dependencies where words.count == 2:
+                p.newDependencies.append(words.joined(separator: " "))
+            case .source where words.count == 1:
+                p.sourceBuilds.append(words[0])
+            default:
+                break
+            }
+        }
+        return p
     }
 
     /// One name per line (`brew search`, `brew list --pinned`). A search with no match exits 1 with empty stdout.

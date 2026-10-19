@@ -1,6 +1,8 @@
 #!/bin/sh
 # Stand-in brew for confirmation tests: run Bodega with BODEGA_BREW=<path to this file>.
 # Everything goes to real brew except a real `cleanup` and a real `upgrade` (logged, not run).
+# Copy it to $TMPDIR first: a GUI app cannot execute it from Google Drive. Active-version and
+# untrusted-tap columns are blank in this mode (they are found relative to the brew path).
 LOG="${TMPDIR:-/tmp}/bodega/fake-actions.log"
 case "$1" in
   cleanup)
