@@ -45,13 +45,24 @@ struct UpgradePreview {
     var command = ["upgrade"]             // what Confirm runs
     var upgrades: [String] = []           // packages asked for: "llvm@21 21.1.8 -> 21.1.8_1"
     var dependencyUpgrades: [String] = [] // pulled in: "node 26.8.2 -> 26.12.0"
+    var dependentUpgrades: [String] = []  // packages that use it: "codeburn 0.9.24 -> 0.9.27"
     var newDependencies: [String] = []    // "esbuild 0.28.2"
+    var deprecated: [String] = []         // "gemini-cli (deprecated)"
+    /// brew's one-line warnings, e.g. "pkgconf would be reinstalled due to macOS version mismatch".
+    var notes: [String] = []
     /// Formulae that would compile; nil when that could not be checked.
     var sourceBuilds: [String]? = []
 
     /// Every formula/cask name the command would touch (first word of each entry).
     var names: [String] {
-        (upgrades + dependencyUpgrades + newDependencies).compactMap { $0.split(separator: " ").first.map(String.init) }
+        (upgrades + dependencyUpgrades + dependentUpgrades + newDependencies)
+            .compactMap { $0.split(separator: " ").first.map(String.init) }
+    }
+
+    /// Only the one package asked for changes, from a bottle, with nothing for brew to warn about.
+    var isPlainSingleUpdate: Bool {
+        upgrades.count == 1 && dependencyUpgrades.isEmpty && dependentUpgrades.isEmpty && newDependencies.isEmpty
+            && deprecated.isEmpty && notes.isEmpty && sourceBuilds == []
     }
 }
 
@@ -107,6 +118,12 @@ enum Brew {
 
     /// Exit status + stdout; stderr is dropped so brew's errors can never be parsed as data.
     static func stdout(_ args: [String]) async throws -> (Int32, Data) {
+        let r = try await capture(args)
+        return (r.status, r.out)
+    }
+
+    /// stdout and stderr kept apart. stderr is read on its own task so a full pipe cannot stall brew.
+    static func capture(_ args: [String]) async throws -> (status: Int32, out: Data, err: Data) {
         try await Task.detached {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
@@ -114,13 +131,15 @@ enum Brew {
             var env = ProcessInfo.processInfo.environment
             env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
             p.environment = env
-            let out = Pipe()
+            let out = Pipe(), err = Pipe()
             p.standardOutput = out
-            p.standardError = FileHandle.nullDevice
+            p.standardError = err
             try p.run()
+            let errHandle = err.fileHandleForReading
+            let errTask = Task.detached { errHandle.readDataToEndOfFile() }
             let data = out.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
-            return (p.terminationStatus, data)
+            return (p.terminationStatus, data, await errTask.value)
         }.value
     }
 
@@ -144,29 +163,33 @@ enum Brew {
     /// section ("Some casks with `auto_updates true` …") are skipped because they do not have an entry's shape.
     /// brew's own "would build from source" section is ignored: it only covers the packages asked for,
     /// not their dependencies (see `sourceBuilds(info:tag:)`).
-    static func parseUpgradeDryRun(_ out: String) -> UpgradePreview {
-        enum Section { case upgrades, dependencyUpgrades, dependencies }
+    /// `err` is brew's stderr: one-line warnings become notes; block headers ("…not trusted:") are skipped.
+    static func parseUpgradeDryRun(_ out: String, err: String = "") -> UpgradePreview {
+        enum Section { case upgrades, dependencyUpgrades, dependentUpgrades, dependencies, deprecated }
         var p = UpgradePreview()
         var section: Section?
         for line in parseNames(out) {
             if line.hasPrefix("==>") {
-                section = line.contains("Would upgrade")
-                    ? (line.contains("dependenc") ? .dependencyUpgrades : .upgrades)
-                    : line.contains("Would install") ? .dependencies : nil
+                section = line.contains("Deprecated or disabled") ? .deprecated
+                    : line.contains("Would install") ? .dependencies
+                    : !line.contains("Would upgrade") ? nil
+                    : line.contains("dependent") ? .dependentUpgrades
+                    : line.contains("dependenc") ? .dependencyUpgrades : .upgrades
                 continue
             }
             let words = line.split(separator: " ").map(String.init)
-            let isUpgrade = words.count >= 4 && words[2] == "->"
+            let upgrade = words.count >= 4 && words[2] == "->" ? words.prefix(4).joined(separator: " ") : nil
             switch section {
-            case .upgrades where isUpgrade:
-                p.upgrades.append(words.prefix(4).joined(separator: " "))
-            case .dependencyUpgrades where isUpgrade:
-                p.dependencyUpgrades.append(words.prefix(4).joined(separator: " "))
-            case .dependencies where words.count == 2:
-                p.newDependencies.append(words.joined(separator: " "))
-            default:
-                break
+            case .upgrades: if let upgrade { p.upgrades.append(upgrade) }
+            case .dependencyUpgrades: if let upgrade { p.dependencyUpgrades.append(upgrade) }
+            case .dependentUpgrades: if let upgrade { p.dependentUpgrades.append(upgrade) }
+            case .dependencies where words.count == 2: p.newDependencies.append(words.joined(separator: " "))
+            case .deprecated where words.count <= 2 && !line.contains("`"): p.deprecated.append(line)
+            default: break
             }
+        }
+        p.notes = parseNames(err).compactMap { line in
+            line.hasPrefix("Warning: ") && !line.hasSuffix(":") ? String(line.dropFirst("Warning: ".count)) : nil
         }
         return p
     }
@@ -181,7 +204,7 @@ enum Brew {
         }
     }
 
-    /// This Mac's bottle tag (e.g. "arm64_sonoma"), asked once from brew itself.
+    /// This Mac's bottle tag (e.g. "arm64_golden_gate" on macOS 27), asked once per launch from brew itself.
     static let bottleTag = Task<String?, Never> {
         let out = (try? await stdout(["ruby", "-e", "puts Utils::Bottles.tag"]))?.1 ?? Data()
         let tag = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -190,8 +213,9 @@ enum Brew {
 
     /// Dry run of `command` plus the bottle check over every formula it would touch.
     static func previewUpgrade(_ command: [String]) async -> UpgradePreview {
-        let out = (try? await stdout(command + ["--dry-run"]))?.1 ?? Data()
-        var p = parseUpgradeDryRun(String(decoding: out, as: UTF8.self))
+        let r = try? await capture(command + ["--dry-run"])
+        var p = parseUpgradeDryRun(String(decoding: r?.out ?? Data(), as: UTF8.self),
+                                   err: String(decoding: r?.err ?? Data(), as: UTF8.self))
         p.command = command
         guard !p.names.isEmpty else { return p }
         if let tag = await bottleTag.value, let info = try? await json(["info", "--json=v2"] + p.names) {

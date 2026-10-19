@@ -86,8 +86,7 @@ final class BrewModel: ObservableObject {
         busy = "Checking what brew \(command.joined(separator: " ")) would do…"
         let preview = await Brew.previewUpgrade(command)
         busy = nil
-        if package != nil, preview.upgrades.count == 1, preview.dependencyUpgrades.isEmpty,
-           preview.newDependencies.isEmpty, preview.sourceBuilds == [] {
+        if package != nil, preview.isPlainSingleUpdate {
             await perform(command)
         } else {
             upgradePreview = preview
@@ -344,12 +343,15 @@ struct UpgradeSheet: View {
                 VStack(alignment: .leading, spacing: 12) {
                     section("Upgrades", preview.upgrades)
                     section("Dependencies that would also be upgraded", preview.dependencyUpgrades)
+                    section("Packages that use it, also upgraded", preview.dependentUpgrades)
                     section("New dependencies that would be installed", preview.newDependencies)
+                    section("Deprecated or disabled", preview.deprecated)
+                    section("Notes from brew", preview.notes)
                     if let builds = preview.sourceBuilds {
                         if !builds.isEmpty {
-                            Text("Homebrew has no ready-made packages for this macOS version (Tier 3), so these "
-                                 + "\(builds.count) formulae would compile from source. That can take hours; "
-                                 + "Cancel in the main window stops it.")
+                            Text("Homebrew has no ready-made package (bottle) for this Mac for these "
+                                 + "\(builds.count) formulae, so they would compile from source. That can take "
+                                 + "hours; Cancel in the main window stops it.")
                                 .foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
                             section("Would build from source", builds)

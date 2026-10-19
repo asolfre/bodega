@@ -114,6 +114,43 @@ import Testing
         #expect(p.newDependencies == ["esbuild 0.28.2", "cxxopts 3.3.1"])
     }
 
+    @Test func macOS27DryRunWithDependentsDeprecatedAndNotes() {
+        // Real `brew upgrade --dry-run node` on macOS 27, 2026-10-19 (stdout, then a stderr excerpt).
+        let out = """
+        ==> Would upgrade 4 dependencies:
+        simdutf   9.2.0   -> 9.3.2
+        ada-url   4.0.0   -> 4.0.0_1
+        merve     1.2.2_3 -> 1.2.2_4
+        simdjson  5.0.4   -> 5.0.5
+        ==> Would upgrade 1 requested outdated package
+        node 26.8.2 -> 26.12.0 (21.3MB)
+        ==> Would upgrade 2 dependents
+        codeburn    0.9.24 -> 0.9.27 (8.7MB)
+        gemini-cli  0.46.0 -> 0.64.0 (21.5MB)
+        ==> 1 Deprecated or disabled package
+        gemini-cli (deprecated)
+        Some casks with `auto_updates true` or `version :latest` may still require `--greedy`,
+        """
+        let err = """
+        Warning: The following taps are not trusted:
+          ankitpokhrel/jira-cli
+        Homebrew is currently ignoring formulae, casks and commands
+        Warning: pkgconf would be reinstalled due to macOS version mismatch
+        """
+        let p = Brew.parseUpgradeDryRun(out, err: err)
+        #expect(p.upgrades == ["node 26.8.2 -> 26.12.0"])
+        #expect(p.dependencyUpgrades.count == 4)
+        #expect(p.dependentUpgrades == ["codeburn 0.9.24 -> 0.9.27", "gemini-cli 0.46.0 -> 0.64.0"])
+        #expect(p.deprecated == ["gemini-cli (deprecated)"])
+        #expect(p.notes == ["pkgconf would be reinstalled due to macOS version mismatch"])
+        #expect(p.names.contains("codeburn"))
+        #expect(!p.isPlainSingleUpdate)
+        var plain = Brew.parseUpgradeDryRun("==> Would upgrade 1 requested outdated package\npup 1.26.0 -> 2.0.0")
+        #expect(plain.isPlainSingleUpdate)
+        plain.notes = ["pkgconf would be reinstalled due to macOS version mismatch"]
+        #expect(!plain.isPlainSingleUpdate)  // brew would change something else too
+    }
+
     @Test func sourceBuildRule() {
         func formula(_ name: String, _ tap: String, _ files: [String]) -> [String: Any] {
             ["name": name, "tap": tap,
