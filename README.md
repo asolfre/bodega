@@ -33,10 +33,11 @@ so it runs on this Mac but is not set up for distribution.
 | Cancel a running action | SIGINT to brew, same as Ctrl-C |
 
 Before an update, Bodega shows what brew would really do: the packages you asked for, dependencies it
-would upgrade or install, and which formulae would **compile from source**. brew's own dry run only
-lists source builds for the packages you asked for; Bodega checks every formula involved (an
-official-tap formula with no bottle for this Mac compiles). A single update with nothing else to it
-starts straight away.
+would upgrade or install, packages that use it and would be upgraded too, deprecated packages, brew's
+one-line warnings (e.g. "pkgconf would be reinstalled due to macOS version mismatch"), and which
+formulae would **compile from source**. brew's own dry run only lists source builds for the packages
+you asked for; Bodega checks every formula involved (an official-tap formula with no bottle for this
+Mac compiles). A single update with nothing else to it starts straight away.
 
 Every action and each line brew prints is written with a timestamp to `~/Library/Logs/Bodega.log`.
 At launch, a log over 5 MB becomes `Bodega.log.1` and a new one starts.
@@ -76,12 +77,15 @@ These need **Accessibility** (and **Screen Recording** for screenshots) for the 
 
 `VERSION` in `build.sh` sets the version; the build number is the git commit count. Releases are git
 tags: `v0.1.0` (list, update, uninstall, install), `v0.2.0` (search, pin, cleanup, update all, cancel,
-live log), `v0.2.1` (source builds found for every dependency, `brew --prefix`, log rotation, this README).
+live log), `v0.2.1` (source builds found for every dependency, `brew --prefix`, log rotation, this README),
+`v0.2.2` (dependents, deprecated packages and brew's warnings in the update sheet; wording for any macOS).
 
 ## Known limits
 
-- **macOS 14 is Homebrew Tier 3.** There are no new bottles for it, so many updates compile from
-  source and can take hours. Bodega warns before they start; Cancel stops them.
+- **Source builds.** A formula with no bottle for this Mac compiles from source, which can take hours.
+  That was most updates on macOS 14 (Homebrew Tier 3, no new bottles); on current macOS it is rare.
+  Bodega asks brew for this Mac's bottle tag at every launch, warns before such an update starts,
+  and Cancel stops it.
 - **Untrusted taps.** brew refuses to load formulae from taps you have not trusted (`brew trust`).
   Bodega labels them; actions on them show brew's error.
 - **Casks** with `auto_updates` or `version :latest` are not in Update all (no `--greedy`).

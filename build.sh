@@ -3,7 +3,7 @@
 set -eu
 cd "$(dirname "$0")"
 SCRATCH="${TMPDIR:-/tmp}/bodega-build"
-VERSION=0.2.1
+VERSION=0.2.2
 BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 0)  # commit count: ties a build to its commit
 swift build -c release --scratch-path "$SCRATCH"
 mkdir -p build.noindex  # Spotlight skips *.noindex: only ~/Applications shows up
