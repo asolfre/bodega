@@ -24,6 +24,7 @@ final class BrewModel: ObservableObject {
             if let dumpPath {
                 let lines = packages.map {
                     "\($0.kind.rawValue)\t\($0.name)\t\($0.version)\t\($0.latest ?? "")\t\($0.active ?? "")"
+                        + "\t\($0.pinned ? 1 : 0)\t\($0.untrusted ? 1 : 0)"
                 }
                 try? (lines.joined(separator: "\n") + "\n").write(toFile: dumpPath, atomically: true, encoding: .utf8)
             }
@@ -131,7 +132,19 @@ struct ContentView: View {
                     }
                 }
                 Table(shown) {
-                    TableColumn("Name", value: \.name)
+                    TableColumn("Name") { p in
+                        HStack(spacing: 4) {
+                            Text(p.name)
+                            if p.pinned {
+                                Image(systemName: "pin.fill").foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("pinned-\(p.name)")
+                            }
+                            if p.untrusted {
+                                Text("untrusted tap").font(.caption2).foregroundStyle(.orange)
+                                    .accessibilityIdentifier("untrusted-\(p.name)")
+                            }
+                        }
+                    }
                     TableColumn("Type") { Text($0.kind.rawValue) }.width(70)
                     TableColumn("Installed") { p in
                         let v = p.displayVersions
@@ -144,13 +157,20 @@ struct ContentView: View {
                     TableColumn("Actions") { p in
                         HStack {
                             Button("Update") { Task { await model.perform("upgrade", p.name, cask: p.kind == .cask) } }
-                                .disabled(p.latest == nil || model.busy != nil)
+                                .disabled(p.latest == nil || p.pinned || model.busy != nil)
                                 .accessibilityIdentifier("update-\(p.name)")
                             Button("Uninstall") { pendingUninstall = p }
                                 .disabled(model.busy != nil)
                                 .accessibilityIdentifier("uninstall-\(p.name)")
+                            if p.kind == .formula {
+                                Button(p.pinned ? "Unpin" : "Pin") {
+                                    Task { await model.perform(p.pinned ? "unpin" : "pin", p.name, cask: false) }
+                                }
+                                .disabled(model.busy != nil)
+                                .accessibilityIdentifier("\(p.pinned ? "unpin" : "pin")-\(p.name)")
+                            }
                         }
-                    }.width(170)
+                    }.width(220)
                 }
             }
             .padding()
@@ -159,7 +179,7 @@ struct ContentView: View {
             LogView(store: model.output)
             .frame(minHeight: 100)
         }
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(minWidth: 860, minHeight: 520)
         .task { await model.refresh() }
         .sheet(isPresented: Binding(get: { results != nil }, set: { if !$0 { results = nil } })) {
             SearchSheet(query: query, results: results ?? [], error: searchError) { results = nil }

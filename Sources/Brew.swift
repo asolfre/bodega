@@ -9,6 +9,9 @@ struct Package: Identifiable, Hashable {
     var latest: String?
     /// The version in use: the target of `<prefix>/opt/<name>` for formulae. Nil when unknown.
     var active: String?
+    var pinned = false
+    /// Installed from a tap that is neither official nor trusted: brew refuses to load it.
+    var untrusted = false
     var id: String { "\(kind.rawValue):\(name)" }
     var version: String { versions.joined(separator: " ") }
     /// Active version first, then the others, so the version in use is always the first one shown.
@@ -103,8 +106,8 @@ enum Brew {
         async let f = stdout(["search", "--formula", query])
         async let c = stdout(["search", "--cask", query])
         let (fr, cr) = try await (f, c)
-        let all = parseSearch(String(decoding: fr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .formula) }
-            + parseSearch(String(decoding: cr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .cask) }
+        let all = parseNames(String(decoding: fr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .formula) }
+            + parseNames(String(decoding: cr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .cask) }
         return exactFirst(all, query)
     }
 
@@ -114,8 +117,8 @@ enum Brew {
         return results.filter { $0.shortName.lowercased() == q } + results.filter { $0.shortName.lowercased() != q }
     }
 
-    /// `brew search` prints bare names on a match; on no match it exits 1 with empty stdout (= no results).
-    static func parseSearch(_ out: String) -> [String] {
+    /// One name per line (`brew search`, `brew list --pinned`). A search with no match exits 1 with empty stdout.
+    static func parseNames(_ out: String) -> [String] {
         out.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -127,18 +130,40 @@ enum Brew {
         async let formulae = run(["list", "--formula", "--versions"])
         async let casks = run(["list", "--cask", "--versions"])
         async let outJ = json(["outdated", "--json=v2"])
+        async let pinnedR = run(["list", "--pinned"])
+        async let trustJ = json(["trust", "--json=v1"])
         let (f, c, outdated) = try await (formulae, casks, outJ)
         guard f.status == 0, c.status == 0 else { throw BrewError(message: f.output + c.output) }
+        let pinned = Set(parseNames(await pinnedR.output))
+        let trust = (try? await trustJ) ?? [:]
 
         let latest = parseOutdated(outdated)
-        let optDir = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("opt").path
+        let prefix = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
+        let optDir = prefix.appendingPathComponent("opt").path
         var pkgs = parseList(f.output, .formula, latest: latest) + parseList(c.output, .cask, latest: latest)
         for i in pkgs.indices where pkgs[i].kind == .formula {
-            let link = try? FileManager.default.destinationOfSymbolicLink(atPath: "\(optDir)/\(pkgs[i].name)")
+            let name = pkgs[i].name
+            let link = try? FileManager.default.destinationOfSymbolicLink(atPath: "\(optDir)/\(name)")
             pkgs[i].active = link.map { ($0 as NSString).lastPathComponent }
+            pkgs[i].pinned = pinned.contains(name)
+            let keg = pkgs[i].active ?? pkgs[i].versions.last ?? ""
+            let receipt = prefix.appendingPathComponent("Cellar/\(name)/\(keg)/INSTALL_RECEIPT.json")
+            pkgs[i].untrusted = isUntrusted(tap: receiptTap(receipt), name: name, trust: trust)
         }
         return pkgs.sorted { $0.name < $1.name }
+    }
+
+    static func receiptTap(_ url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (json["source"] as? [String: Any])?["tap"] as? String
+    }
+
+    /// Official taps are always trusted; others only when the tap or the formula is in `brew trust --json=v1`.
+    static func isUntrusted(tap: String?, name: String, trust: [String: Any]) -> Bool {
+        guard let tap, !tap.hasPrefix("homebrew/") else { return false }
+        let taps = trust["taps"] as? [String] ?? [], formulae = trust["formulae"] as? [String] ?? []
+        return !taps.contains(tap) && !formulae.contains("\(tap)/\(name)")
     }
 
     /// `brew outdated --json=v2` → "kind:shortname" → newest version.

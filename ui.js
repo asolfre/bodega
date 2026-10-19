@@ -52,6 +52,7 @@ function run(argv) {
   }
   if (cmd === "read") { var el = need(id); try { return String(el.value()); } catch (e) { return String(el.name()); } }
   if (cmd === "exists") { return find(id) ? "yes" : "no"; }
+  if (cmd === "enabled") { return need(id).enabled() ? "enabled" : "disabled"; }
   if (cmd === "sheet-ids") {
     var ids = [];
     function collect(el) {

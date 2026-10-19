@@ -23,4 +23,15 @@ done | sort > "$T/cli-active"
 awk -F'\t' '$1=="formula" && split($3,v," ")>1 {print $2"\t"$5}' "$UI" | sort > "$T/ui-active"
 echo "multi-version formulae: $(wc -l < "$T/cli-active")"
 diff "$T/cli-active" "$T/ui-active" && echo "ACTIVE VERSIONS MATCH" || ok=1
+brew list --pinned | sort > "$T/cli-pinned"
+awk -F'\t' '$6=="1"{print $2}' "$UI" | sort > "$T/ui-pinned"
+echo "pinned: cli=[$(tr '\n' ' ' < "$T/cli-pinned")] ui=[$(tr '\n' ' ' < "$T/ui-pinned")]"
+diff "$T/cli-pinned" "$T/ui-pinned" && echo "PINNED MATCH" || ok=1
+# Untrusted: brew info --installed silently skips formulae it refuses to load (independent of receipts).
+brew list --formula -1 | sort > "$T/all-f"
+brew info --json=v2 --installed 2>/dev/null | python3 -c 'import json,sys;[print(f["name"]) for f in json.load(sys.stdin)["formulae"]]' | sort > "$T/loadable"
+comm -23 "$T/all-f" "$T/loadable" > "$T/cli-untrusted"
+awk -F'\t' '$7=="1"{print $2}' "$UI" | sort > "$T/ui-untrusted"
+echo "untrusted: cli=[$(tr '\n' ' ' < "$T/cli-untrusted")] ui=[$(tr '\n' ' ' < "$T/ui-untrusted")]"
+diff "$T/cli-untrusted" "$T/ui-untrusted" && echo "UNTRUSTED MATCH" || ok=1
 exit $ok

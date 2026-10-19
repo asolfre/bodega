@@ -23,11 +23,11 @@ import Testing
 
     @Test func searchNoMatchIsEmpty() {
         // brew search exits 1 with empty stdout; the error text only goes to stderr (dropped).
-        #expect(Brew.parseSearch("").isEmpty)
+        #expect(Brew.parseNames("").isEmpty)
     }
 
     @Test func searchNamesAndTapQualifiedShortName() {
-        let names = Brew.parseSearch("derailed/k9s/k9s\nk9s\n")
+        let names = Brew.parseNames("derailed/k9s/k9s\nk9s\n")
         #expect(names == ["derailed/k9s/k9s", "k9s"])
         #expect(SearchResult(name: "datadog-labs/pack/pup", kind: .formula).shortName == "pup")
         #expect(SearchResult(name: "firefox@beta", kind: .cask).shortName == "firefox@beta")
@@ -37,6 +37,16 @@ import Testing
         let r = ["as-tree", "tree", "derailed/k9s/k9s"].map { SearchResult(name: $0, kind: .formula) }
         #expect(Brew.exactFirst(r, "Tree").map(\.name) == ["tree", "as-tree", "derailed/k9s/k9s"])
         #expect(Brew.exactFirst(r, "k9s").first?.name == "derailed/k9s/k9s")
+    }
+
+    @Test func untrustedTapRule() {
+        let trust: [String: Any] = ["taps": ["mongodb/brew"], "formulae": ["datadog-labs/pack/pup"]]
+        #expect(Brew.isUntrusted(tap: "derailed/k9s", name: "k9s", trust: trust))
+        #expect(Brew.isUntrusted(tap: "streamdal/public", name: "plumber", trust: trust))
+        #expect(!Brew.isUntrusted(tap: "datadog-labs/pack", name: "pup", trust: trust))           // formula trusted
+        #expect(!Brew.isUntrusted(tap: "mongodb/brew", name: "mongodb-community@4.4", trust: trust)) // whole tap
+        #expect(!Brew.isUntrusted(tap: "homebrew/core", name: "jq", trust: [:]))                   // official
+        #expect(!Brew.isUntrusted(tap: nil, name: "local", trust: [:]))                            // no receipt tap
     }
 
     @Test func tapQualifiedOutdatedMatchesShortName() {
