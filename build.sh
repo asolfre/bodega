@@ -3,6 +3,8 @@
 set -eu
 cd "$(dirname "$0")"
 SCRATCH="${TMPDIR:-/tmp}/bodega-build"
+VERSION=0.2.0
+BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 0)  # commit count: ties a build to its commit
 swift build -c release --scratch-path "$SCRATCH"
 mkdir -p build.noindex  # Spotlight skips *.noindex: only ~/Applications shows up
 APP=build.noindex/Bodega.app
@@ -19,7 +21,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleExecutable</key><string>Bodega</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
