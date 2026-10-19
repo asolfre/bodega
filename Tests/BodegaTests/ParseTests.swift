@@ -21,6 +21,24 @@ import Testing
         #expect(Brew.parseList("", .cask, latest: [:]).isEmpty)
     }
 
+    @Test func searchNoMatchIsEmpty() {
+        // brew search exits 1 with empty stdout; the error text only goes to stderr (dropped).
+        #expect(Brew.parseSearch("").isEmpty)
+    }
+
+    @Test func searchNamesAndTapQualifiedShortName() {
+        let names = Brew.parseSearch("derailed/k9s/k9s\nk9s\n")
+        #expect(names == ["derailed/k9s/k9s", "k9s"])
+        #expect(SearchResult(name: "datadog-labs/pack/pup", kind: .formula).shortName == "pup")
+        #expect(SearchResult(name: "firefox@beta", kind: .cask).shortName == "firefox@beta")
+    }
+
+    @Test func exactMatchComesFirst() {
+        let r = ["as-tree", "tree", "derailed/k9s/k9s"].map { SearchResult(name: $0, kind: .formula) }
+        #expect(Brew.exactFirst(r, "Tree").map(\.name) == ["tree", "as-tree", "derailed/k9s/k9s"])
+        #expect(Brew.exactFirst(r, "k9s").first?.name == "derailed/k9s/k9s")
+    }
+
     @Test func tapQualifiedOutdatedMatchesShortName() {
         let json: [String: Any] = [
             "formulae": [["name": "datadog-labs/pack/pup", "current_version": "2.0.0"]],

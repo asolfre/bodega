@@ -18,6 +18,14 @@ struct Package: Identifiable, Hashable {
     }
 }
 
+struct SearchResult: Identifiable, Hashable {
+    let name: String
+    let kind: Package.Kind
+    var id: String { "\(kind.rawValue):\(name)" }
+    /// brew list shows short names, so "installed" is decided on the part after the last "/".
+    var shortName: String { String(name.split(separator: "/").last ?? Substring(name)) }
+}
+
 struct BrewResult {
     let status: Int32
     let output: String
@@ -67,6 +75,12 @@ enum Brew {
 
     /// stdout only, for JSON commands (brew prints progress on stderr).
     static func json(_ args: [String]) async throws -> [String: Any] {
+        let (_, data) = try await stdout(args)
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// Exit status + stdout; stderr is dropped so brew's errors can never be parsed as data.
+    static func stdout(_ args: [String]) async throws -> (Int32, Data) {
         try await Task.detached {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
@@ -80,8 +94,31 @@ enum Brew {
             try p.run()
             let data = out.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
-            return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+            return (p.terminationStatus, data)
         }.value
+    }
+
+    /// Formula and cask search in parallel. Names can be tap-qualified (datadog-labs/pack/pup).
+    static func search(_ query: String) async throws -> [SearchResult] {
+        async let f = stdout(["search", "--formula", query])
+        async let c = stdout(["search", "--cask", query])
+        let (fr, cr) = try await (f, c)
+        let all = parseSearch(String(decoding: fr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .formula) }
+            + parseSearch(String(decoding: cr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .cask) }
+        return exactFirst(all, query)
+    }
+
+    /// An exact name match goes on top: searching "tree" should not bury `tree` under `as-tree`.
+    static func exactFirst(_ results: [SearchResult], _ query: String) -> [SearchResult] {
+        let q = query.lowercased()
+        return results.filter { $0.shortName.lowercased() == q } + results.filter { $0.shortName.lowercased() != q }
+    }
+
+    /// `brew search` prints bare names on a match; on no match it exits 1 with empty stdout (= no results).
+    static func parseSearch(_ out: String) -> [String] {
+        out.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// The list comes from `brew list --versions` (reads the Cellar/Caskroom), not `brew info --installed`,

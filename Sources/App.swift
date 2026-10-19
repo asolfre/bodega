@@ -4,7 +4,8 @@ import SwiftUI
 @MainActor
 final class BrewModel: ObservableObject {
     @Published var packages: [Package] = []
-    @Published var log = ""
+    /// Separate object: only the log pane watches it, so a new line does not redraw the table.
+    let output = LogStore()
     @Published var busy: String?
     @Published var loadError: String?
     @Published var running: Process?
@@ -61,9 +62,9 @@ final class BrewModel: ObservableObject {
     }
 
     private func show(_ line: String) {
-        log += line + "\n"
+        output.text += line + "\n"
         // ponytail: keeps only the newest ~200 KB on screen; Bodega.log has everything.
-        if log.utf8.count > 200_000 { log = String(log.suffix(150_000)) }
+        if output.text.utf8.count > 200_000 { output.text = String(output.text.suffix(150_000)) }
     }
 
     static let logURL = FileManager.default.homeDirectoryForCurrentUser
@@ -90,8 +91,10 @@ final class BrewModel: ObservableObject {
 struct ContentView: View {
     @EnvironmentObject var model: BrewModel
     @State private var filter = ""
-    @State private var installName = ""
-    @State private var installCask = false
+    @State private var query = ""
+    @State private var searching = false
+    @State private var results: [SearchResult]?
+    @State private var searchError: String?
     @State private var pendingUninstall: Package?
 
     var shown: [Package] {
@@ -102,24 +105,29 @@ struct ContentView: View {
         VSplitView {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    TextField("Package to install", text: $installName)
+                    TextField("Search packages to install", text: $query)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 240)
-                        .onSubmit(install)
-                    Toggle("Cask", isOn: $installCask)
-                    Button("Install", action: install)
-                        .disabled(installName.trimmingCharacters(in: .whitespaces).isEmpty || model.busy != nil)
+                        .frame(maxWidth: 260)
+                        .onSubmit(search)
+                        .accessibilityIdentifier("search-field")
+                    Button("Search", action: search)
+                        .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || searching)
+                        .accessibilityIdentifier("search-button")
                     Spacer()
                     TextField("Filter", text: $filter)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 200)
+                        .accessibilityIdentifier("filter-field")
                     Button("Refresh") { Task { await model.refresh() } }
                         .disabled(model.busy != nil)
+                        .accessibilityIdentifier("refresh-button")
                 }
                 HStack {
                     Text(status).font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("status")
                     if model.running != nil {
                         Button("Cancel") { model.cancel() }.controlSize(.small)
+                            .accessibilityIdentifier("cancel-button")
                     }
                 }
                 Table(shown) {
@@ -137,8 +145,10 @@ struct ContentView: View {
                         HStack {
                             Button("Update") { Task { await model.perform("upgrade", p.name, cask: p.kind == .cask) } }
                                 .disabled(p.latest == nil || model.busy != nil)
+                                .accessibilityIdentifier("update-\(p.name)")
                             Button("Uninstall") { pendingUninstall = p }
                                 .disabled(model.busy != nil)
+                                .accessibilityIdentifier("uninstall-\(p.name)")
                         }
                     }.width(170)
                 }
@@ -146,21 +156,15 @@ struct ContentView: View {
             .padding()
             .frame(minHeight: 300)
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(model.log.isEmpty ? "brew output appears here" : model.log)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding(8)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .onChange(of: model.log) { proxy.scrollTo("end", anchor: .bottom) }
-            }
+            LogView(store: model.output)
             .frame(minHeight: 100)
         }
         .frame(minWidth: 760, minHeight: 520)
         .task { await model.refresh() }
+        .sheet(isPresented: Binding(get: { results != nil }, set: { if !$0 { results = nil } })) {
+            SearchSheet(query: query, results: results ?? [], error: searchError) { results = nil }
+                .environmentObject(model)
+        }
         .confirmationDialog("Uninstall \(pendingUninstall?.name ?? "")?",
                             isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
             Button("Uninstall", role: .destructive) {
@@ -177,11 +181,62 @@ struct ContentView: View {
         return "\(f) formulae, \(model.packages.count - f) casks, \(outdated) outdated"
     }
 
-    func install() {
-        let name = installName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, model.busy == nil else { return }
-        installName = ""
-        Task { await model.perform("install", name, cask: installCask) }
+    func search() {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty, !searching else { return }
+        searching = true
+        Task {
+            do { results = try await Brew.search(q); searchError = nil } catch {
+                results = []; searchError = error.localizedDescription
+            }
+            searching = false
+        }
+    }
+}
+
+struct SearchSheet: View {
+    @EnvironmentObject var model: BrewModel
+    let query: String
+    let results: [SearchResult]
+    let error: String?
+    let close: () -> Void
+
+    var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Results for “\(query)”").font(.headline)
+            if let error { Text(error).foregroundStyle(.red) }
+            if results.isEmpty {
+                Text("No results").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
+                    .accessibilityIdentifier("no-results")
+            } else {
+                List(results) { r in
+                    HStack {
+                        Text(r.name)
+                        Spacer()
+                        Text(r.kind.rawValue).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
+                        if installed.contains("\(r.kind.rawValue):\(r.shortName)") {
+                            Text("installed").foregroundStyle(.secondary).frame(width: 70)
+                                .accessibilityIdentifier("installed-\(r.id)")
+                        } else {
+                            Button("Install") {
+                                close()
+                                Task { await model.perform("install", r.name, cask: r.kind == .cask) }
+                            }
+                            .disabled(model.busy != nil)
+                            .frame(width: 70)
+                            .accessibilityIdentifier("install-\(r.id)")
+                        }
+                    }
+                }
+                .frame(minHeight: 240)
+            }
+            HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("close-results") }
+        }
+        .padding()
+        .frame(width: 520)
     }
 }
 
@@ -191,5 +246,28 @@ struct BodegaApp: App {
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         WindowGroup("Bodega") { ContentView().environmentObject(model) }
+    }
+}
+
+final class LogStore: ObservableObject {
+    @Published var text = ""
+}
+
+struct LogView: View {
+    @ObservedObject var store: LogStore
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                Text(store.text.isEmpty ? "brew output appears here" : store.text)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .accessibilityIdentifier("log")
+                Color.clear.frame(height: 1).id("end")
+            }
+            .onChange(of: store.text) { proxy.scrollTo("end", anchor: .bottom) }
+        }
     }
 }
