@@ -85,8 +85,48 @@ import Testing
         #expect(p.newDependencies == ["cxxopts 3.3.1", "corepack 0.36.0", "esbuild 0.28.2"])
         #expect(p.upgrades == ["llvm@21 21.1.8 -> 21.1.8_1", "datadog-labs/pack/pup 1.26.0 -> 2.0.0",
                                "flyway 13.10.0 -> 13.10.3"])
-        #expect(p.sourceBuilds == ["llvm@21", "node"])
+        #expect(p.dependencyUpgrades.isEmpty)
+        #expect(p.sourceBuilds == [])  // brew's own list is ignored; the bottle rule fills it in
+        #expect(p.names == ["llvm@21", "datadog-labs/pack/pup", "flyway", "cxxopts", "corepack", "esbuild"])
         #expect(Brew.parseUpgradeDryRun("").upgrades.isEmpty)
+    }
+
+    @Test func singlePackageDryRunSeparatesDependencyUpgrades() {
+        // Real `brew upgrade --dry-run pnpm` stdout, 2026-10-19.
+        let out = """
+        ==> Would install 2 dependencies:
+        esbuild  0.28.2
+        cxxopts  3.3.1
+        ==> Would upgrade 5 dependencies:
+        simdutf   9.2.0   -> 9.3.0
+        ada-url   4.0.0   -> 4.0.0_1
+        merve     1.2.2_3 -> 1.2.2_4
+        simdjson  5.0.4   -> 5.0.5
+        node      26.8.2  -> 26.12.0
+        ==> Would upgrade 1 requested outdated package
+        pnpm 11.0.6 -> 12.11.2
+        ==> 1 homebrew/core formula that would build from source
+        pnpm
+        """
+        let p = Brew.parseUpgradeDryRun(out)
+        #expect(p.upgrades == ["pnpm 11.0.6 -> 12.11.2"])
+        #expect(p.dependencyUpgrades.map { $0.split(separator: " ")[0] } == ["simdutf", "ada-url", "merve", "simdjson", "node"])
+        #expect(p.newDependencies == ["esbuild 0.28.2", "cxxopts 3.3.1"])
+    }
+
+    @Test func sourceBuildRule() {
+        func formula(_ name: String, _ tap: String, _ files: [String]) -> [String: Any] {
+            ["name": name, "tap": tap,
+             "bottle": ["stable": ["files": Dictionary(uniqueKeysWithValues: files.map { ($0, [String: Any]()) })]]]
+        }
+        let info: [String: Any] = ["formulae": [
+            formula("node", "homebrew/core", ["arm64_tahoe", "arm64_sequoia"]),  // no bottle for sonoma
+            formula("esbuild", "homebrew/core", ["arm64_sequoia", "arm64_sonoma"]),
+            formula("cowsay", "homebrew/core", ["all"]),                         // bottle for every Mac
+            ["name": "pup", "tap": "datadog-labs/pack"],                         // ships a ready-made binary
+        ]]
+        #expect(Brew.sourceBuilds(info: info, tag: "arm64_sonoma") == ["node"])
+        #expect(Brew.sourceBuilds(info: info, tag: "arm64_sequoia").isEmpty)
     }
 
     @Test func tapQualifiedOutdatedMatchesShortName() {

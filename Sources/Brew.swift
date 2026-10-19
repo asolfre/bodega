@@ -40,11 +40,19 @@ struct CleanupPreview {
     let summary: String?
 }
 
-/// What `brew upgrade --dry-run` says a plain `brew upgrade` would do.
+/// What `brew upgrade --dry-run` says a `brew upgrade …` would do.
 struct UpgradePreview {
-    var upgrades: [String] = []        // "llvm@21 21.1.8 -> 21.1.8_1"
-    var newDependencies: [String] = [] // "esbuild 0.28.2"
-    var sourceBuilds: [String] = []    // "llvm@21"
+    var command = ["upgrade"]             // what Confirm runs
+    var upgrades: [String] = []           // packages asked for: "llvm@21 21.1.8 -> 21.1.8_1"
+    var dependencyUpgrades: [String] = [] // pulled in: "node 26.8.2 -> 26.12.0"
+    var newDependencies: [String] = []    // "esbuild 0.28.2"
+    /// Formulae that would compile; nil when that could not be checked.
+    var sourceBuilds: [String]? = []
+
+    /// Every formula/cask name the command would touch (first word of each entry).
+    var names: [String] {
+        (upgrades + dependencyUpgrades + newDependencies).compactMap { $0.split(separator: " ").first.map(String.init) }
+    }
 }
 
 enum Brew {
@@ -134,28 +142,62 @@ enum Brew {
 
     /// `brew upgrade --dry-run` stdout: "==> " section headers, then entries. Hint lines mixed into a
     /// section ("Some casks with `auto_updates true` …") are skipped because they do not have an entry's shape.
+    /// brew's own "would build from source" section is ignored: it only covers the packages asked for,
+    /// not their dependencies (see `sourceBuilds(info:tag:)`).
     static func parseUpgradeDryRun(_ out: String) -> UpgradePreview {
-        enum Section { case upgrades, dependencies, source }
+        enum Section { case upgrades, dependencyUpgrades, dependencies }
         var p = UpgradePreview()
         var section: Section?
         for line in parseNames(out) {
             if line.hasPrefix("==>") {
-                section = line.contains("Would upgrade") ? .upgrades
-                    : line.contains("Would install") ? .dependencies
-                    : line.contains("build from source") ? .source : nil
+                section = line.contains("Would upgrade")
+                    ? (line.contains("dependenc") ? .dependencyUpgrades : .upgrades)
+                    : line.contains("Would install") ? .dependencies : nil
                 continue
             }
             let words = line.split(separator: " ").map(String.init)
+            let isUpgrade = words.count >= 4 && words[2] == "->"
             switch section {
-            case .upgrades where words.count >= 4 && words[2] == "->":
+            case .upgrades where isUpgrade:
                 p.upgrades.append(words.prefix(4).joined(separator: " "))
+            case .dependencyUpgrades where isUpgrade:
+                p.dependencyUpgrades.append(words.prefix(4).joined(separator: " "))
             case .dependencies where words.count == 2:
                 p.newDependencies.append(words.joined(separator: " "))
-            case .source where words.count == 1:
-                p.sourceBuilds.append(words[0])
             default:
                 break
             }
+        }
+        return p
+    }
+
+    /// A formula compiles when it comes from an official tap and has no bottle for this Mac.
+    /// Third-party taps are skipped: they download ready-made binaries rather than bottles.
+    static func sourceBuilds(info: [String: Any], tag: String) -> [String] {
+        (info["formulae"] as? [[String: Any]] ?? []).compactMap { f in
+            guard let name = f["name"] as? String, (f["tap"] as? String ?? "").hasPrefix("homebrew/") else { return nil }
+            let files = ((f["bottle"] as? [String: Any])?["stable"] as? [String: Any])?["files"] as? [String: Any] ?? [:]
+            return files[tag] == nil && files["all"] == nil ? name : nil
+        }
+    }
+
+    /// This Mac's bottle tag (e.g. "arm64_sonoma"), asked once from brew itself.
+    static let bottleTag = Task<String?, Never> {
+        let out = (try? await stdout(["ruby", "-e", "puts Utils::Bottles.tag"]))?.1 ?? Data()
+        let tag = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return tag.isEmpty || tag.contains(" ") ? nil : tag
+    }
+
+    /// Dry run of `command` plus the bottle check over every formula it would touch.
+    static func previewUpgrade(_ command: [String]) async -> UpgradePreview {
+        let out = (try? await stdout(command + ["--dry-run"]))?.1 ?? Data()
+        var p = parseUpgradeDryRun(String(decoding: out, as: UTF8.self))
+        p.command = command
+        guard !p.names.isEmpty else { return p }
+        if let tag = await bottleTag.value, let info = try? await json(["info", "--json=v2"] + p.names) {
+            p.sourceBuilds = sourceBuilds(info: info, tag: tag)
+        } else {
+            p.sourceBuilds = nil
         }
         return p
     }
@@ -183,13 +225,19 @@ enum Brew {
         async let outJ = json(["outdated", "--json=v2"])
         async let pinnedR = run(["list", "--pinned"])
         async let trustJ = json(["trust", "--json=v1"])
+        async let prefixR = stdout(["--prefix"])
         let (f, c, outdated) = try await (formulae, casks, outJ)
         guard f.status == 0, c.status == 0 else { throw BrewError(message: f.output + c.output) }
         let pinned = Set(parseNames(await pinnedR.output))
         let trust = (try? await trustJ) ?? [:]
+        let prefixPath = (try? await prefixR).map { String(decoding: $0.1, as: UTF8.self) }?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Ask brew rather than derive it from `path`, which may be a stand-in script (BODEGA_BREW).
+        let prefix = prefixPath.isEmpty
+            ? URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
+            : URL(fileURLWithPath: prefixPath)
 
         let latest = parseOutdated(outdated)
-        let prefix = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
         let optDir = prefix.appendingPathComponent("opt").path
         var pkgs = parseList(f.output, .formula, latest: latest) + parseList(c.output, .cask, latest: latest)
         for i in pkgs.indices where pkgs[i].kind == .formula {

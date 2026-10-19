@@ -76,18 +76,37 @@ final class BrewModel: ObservableObject {
         cleanupPreview = Brew.parseCleanup(String(decoding: out, as: UTF8.self))
     }
 
-    /// The dialog lists what `brew upgrade --dry-run` says, not `brew outdated`: the dry run also shows
-    /// new dependencies (e.g. one you uninstalled) and which formulae would compile from source.
-    func previewUpgrade() async {
+    /// Shows what the upgrade would really do before it runs. The dry run lists dependencies too
+    /// (e.g. one you uninstalled), and the bottle check finds every formula that would compile.
+    /// A single-package update with nothing else to it starts straight away.
+    func previewUpgrade(_ package: Package? = nil) async {
         guard busy == nil else { return }
-        busy = "Checking what brew upgrade would do…"
-        let out = (try? await Brew.stdout(["upgrade", "--dry-run"]))?.1 ?? Data()
+        var command = ["upgrade"]
+        if let package { command += package.kind == .cask ? ["--cask", package.name] : [package.name] }
+        busy = "Checking what brew \(command.joined(separator: " ")) would do…"
+        let preview = await Brew.previewUpgrade(command)
         busy = nil
-        upgradePreview = Brew.parseUpgradeDryRun(String(decoding: out, as: UTF8.self))
+        if package != nil, preview.upgrades.count == 1, preview.dependencyUpgrades.isEmpty,
+           preview.newDependencies.isEmpty, preview.sourceBuilds == [] {
+            await perform(command)
+        } else {
+            upgradePreview = preview
+        }
     }
 
     static let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/Bodega.log")
+
+    /// At launch: over 5 MB, the log becomes Bodega.log.1 (replacing the older one) and a new log starts.
+    static func rotateLog(limit: Int = 5_000_000) {
+        let fm = FileManager.default
+        guard let size = (try? fm.attributesOfItem(atPath: logURL.path))?[.size] as? Int, size > limit else { return }
+        let old = logURL.appendingPathExtension("1")
+        try? fm.removeItem(at: old)
+        try? fm.moveItem(at: logURL, to: old)
+    }
+
+    init() { Self.rotateLog() }
     private static let stamp: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -180,7 +199,7 @@ struct ContentView: View {
                     }.width(120)
                     TableColumn("Actions") { p in
                         HStack {
-                            Button("Update") { Task { await model.perform("upgrade", p.name, cask: p.kind == .cask) } }
+                            Button("Update") { Task { await model.previewUpgrade(p) } }
                                 .disabled(p.latest == nil || p.pinned || model.busy != nil)
                                 .accessibilityIdentifier("update-\(p.name)")
                             Button("Uninstall") { pendingUninstall = p }
@@ -211,8 +230,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: Binding(get: { model.upgradePreview != nil }, set: { if !$0 { model.upgradePreview = nil } })) {
             UpgradeSheet(preview: model.upgradePreview ?? UpgradePreview()) { confirmed in
+                let command = model.upgradePreview?.command ?? ["upgrade"]
                 model.upgradePreview = nil
-                if confirmed { Task { await model.perform(["upgrade"]) } }
+                if confirmed { Task { await model.perform(command) } }
             }
         }
         .alert(model.cleanupPreview?.count == 0 ? "Nothing to clean up" : "Clean up?",
@@ -316,19 +336,27 @@ struct UpgradeSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(preview.upgrades.isEmpty ? "Everything is up to date" : "Update \(preview.upgrades.count) packages?")
+            Text(preview.upgrades.isEmpty ? "Nothing to update"
+                 : preview.command.count > 1 ? "Update \(preview.command.last ?? "")?"
+                 : "Update \(preview.upgrades.count) packages?")
                 .font(.headline)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     section("Upgrades", preview.upgrades)
+                    section("Dependencies that would also be upgraded", preview.dependencyUpgrades)
                     section("New dependencies that would be installed", preview.newDependencies)
-                    if !preview.sourceBuilds.isEmpty {
-                        Text("Homebrew has no ready-made packages for this macOS version (Tier 3), so these "
-                             + "\(preview.sourceBuilds.count) formulae would compile from source. That can take "
-                             + "hours; Cancel in the main window stops it.")
+                    if let builds = preview.sourceBuilds {
+                        if !builds.isEmpty {
+                            Text("Homebrew has no ready-made packages for this macOS version (Tier 3), so these "
+                                 + "\(builds.count) formulae would compile from source. That can take hours; "
+                                 + "Cancel in the main window stops it.")
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            section("Would build from source", builds)
+                        }
+                    } else if !preview.upgrades.isEmpty {
+                        Text("Could not check which of these would compile from source.")
                             .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                        section("Would build from source", preview.sourceBuilds)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -340,7 +368,7 @@ struct UpgradeSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("upgrade-cancel")
                 if !preview.upgrades.isEmpty {
-                    Button("Update all (\(preview.upgrades.count))") { done(true) }
+                    Button("Update") { done(true) }
                         .accessibilityIdentifier("upgrade-confirm")
                 }
             }
