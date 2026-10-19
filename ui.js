@@ -53,6 +53,17 @@ function run(argv) {
   if (cmd === "read") { var el = need(id); try { return String(el.value()); } catch (e) { return String(el.name()); } }
   if (cmd === "exists") { return find(id) ? "yes" : "no"; }
   if (cmd === "enabled") { return need(id).enabled() ? "enabled" : "disabled"; }
+  if (cmd === "sheet-text") {
+    var texts = [];
+    function collectText(el) {
+      var r = ""; try { r = el.role(); } catch (e) {}
+      if (r === "AXStaticText") { try { texts.push(String(el.value())); } catch (e) {} }
+      var kids; try { kids = el.uiElements(); } catch (e) { return; }
+      kids.forEach(function (k) { var kr = ""; try { kr = k.role(); } catch (e) {} if (kr !== "AXColumn" && kr !== "AXOutline" && kr !== "AXTable") collectText(k); });
+    }
+    proc.windows().forEach(function (w) { try { w.sheets().forEach(collectText); } catch (e) {} });
+    return texts.join("\n");
+  }
   if (cmd === "sheet-ids") {
     var ids = [];
     function collect(el) {

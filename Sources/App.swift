@@ -9,6 +9,7 @@ final class BrewModel: ObservableObject {
     @Published var busy: String?
     @Published var loadError: String?
     @Published var running: Process?
+    @Published var cleanupPreview: CleanupPreview?
     private var cancelled = false
 
     /// When set, every refresh writes the listed packages here so the UI state can be diffed against `brew list`.
@@ -34,22 +35,24 @@ final class BrewModel: ObservableObject {
     }
 
     func perform(_ verb: String, _ name: String, cask: Bool) async {
+        await perform(cask ? [verb, "--cask", name] : [verb, name])
+    }
+
+    func perform(_ args: [String]) async {
         guard busy == nil else { return }
-        var args = [verb]
-        if cask { args.append("--cask") }
-        args.append(name)
         let command = "brew \(args.joined(separator: " "))"
         busy = "\(command)…"
         cancelled = false
-        show("$ \(command)")
+        output.append("$ \(command)")
         Self.writeLog("$ \(command)")
         let r = await Brew.run(args, onStart: { self.running = $0 }, onLine: { line in
-            self.show(line)
+            self.output.append(line)
             Self.writeLog("  \(line)")
         })
         running = nil
         let end = cancelled ? "cancelled (exit \(r.status))" : "exit \(r.status)"
-        show((r.status == 0 && !cancelled ? "✔ " : "✘ ") + end + "\n")
+        output.append((r.status == 0 && !cancelled ? "✔ " : "✘ ") + end)
+        output.append("")
         Self.writeLog(end)
         busy = nil
         await refresh()
@@ -62,10 +65,14 @@ final class BrewModel: ObservableObject {
         running.interrupt()
     }
 
-    private func show(_ line: String) {
-        output.text += line + "\n"
-        // ponytail: keeps only the newest ~200 KB on screen; Bodega.log has everything.
-        if output.text.utf8.count > 200_000 { output.text = String(output.text.suffix(150_000)) }
+    /// `brew cleanup -n` takes about a minute, so it holds the busy guard like any action.
+    /// stdout only: the "Warning: Skipping …" lines come on stderr and could split a "Would remove" line.
+    func previewCleanup() async {
+        guard busy == nil else { return }
+        busy = "Checking what brew cleanup would remove…"
+        let out = (try? await Brew.stdout(["cleanup", "-n"]))?.1 ?? Data()
+        busy = nil
+        cleanupPreview = Brew.parseCleanup(String(decoding: out, as: UTF8.self))
     }
 
     static let logURL = FileManager.default.homeDirectoryForCurrentUser
@@ -122,6 +129,9 @@ struct ContentView: View {
                     Button("Refresh") { Task { await model.refresh() } }
                         .disabled(model.busy != nil)
                         .accessibilityIdentifier("refresh-button")
+                    Button("Clean up…") { Task { await model.previewCleanup() } }
+                        .disabled(model.busy != nil)
+                        .accessibilityIdentifier("cleanup-button")
                 }
                 HStack {
                     Text(status).font(.caption).foregroundStyle(.secondary)
@@ -184,6 +194,17 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { results != nil }, set: { if !$0 { results = nil } })) {
             SearchSheet(query: query, results: results ?? [], error: searchError) { results = nil }
                 .environmentObject(model)
+        }
+        .alert(model.cleanupPreview?.count == 0 ? "Nothing to clean up" : "Clean up?",
+               isPresented: Binding(get: { model.cleanupPreview != nil }, set: { if !$0 { model.cleanupPreview = nil } }),
+               presenting: model.cleanupPreview) { p in
+            if p.count > 0 {
+                Button("Clean up", role: .destructive) { Task { await model.perform(["cleanup"]) } }
+            }
+            Button(p.count > 0 ? "Cancel" : "OK", role: .cancel) {}
+        } message: { p in
+            Text("brew cleanup would remove \(p.count) items. \(p.summary ?? "")\n\n"
+                 + "Brew also does this by itself every 30 days during installs and updates.")
         }
         .confirmationDialog("Uninstall \(pendingUninstall?.name ?? "")?",
                             isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
@@ -269,8 +290,34 @@ struct BodegaApp: App {
     }
 }
 
+/// New lines are published at most 10 times a second, and the pane only lays out visible lines:
+/// one big Text was re-typeset on every line and fell minutes behind a long `brew cleanup`.
+@MainActor
 final class LogStore: ObservableObject {
-    @Published var text = ""
+    struct Line: Identifiable {
+        let id: Int
+        let text: String
+    }
+
+    @Published private(set) var lines: [Line] = []
+    private var pending: [String] = []
+    private var nextID = 0
+
+    func append(_ text: String) {
+        pending.append(text)
+        guard pending.count == 1 else { return }  // a flush is already scheduled
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.flush() }
+    }
+
+    private func flush() {
+        lines += pending.map { text in
+            nextID += 1
+            return Line(id: nextID, text: text)
+        }
+        pending = []
+        // ponytail: keeps only the newest 5,000 lines on screen; Bodega.log has everything.
+        if lines.count > 5_000 { lines.removeFirst(lines.count - 5_000) }
+    }
 }
 
 struct LogView: View {
@@ -279,15 +326,19 @@ struct LogView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Text(store.text.isEmpty ? "brew output appears here" : store.text)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .accessibilityIdentifier("log")
-                Color.clear.frame(height: 1).id("end")
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if store.lines.isEmpty { Text("brew output appears here") }
+                    ForEach(store.lines) { Text($0.text).id($0.id) }
+                }
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .accessibilityIdentifier("log")
             }
-            .onChange(of: store.text) { proxy.scrollTo("end", anchor: .bottom) }
+            .onChange(of: store.lines.last?.id) { _, id in
+                if let id { proxy.scrollTo(id, anchor: .bottom) }
+            }
         }
     }
 }

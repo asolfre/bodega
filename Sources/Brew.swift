@@ -34,9 +34,17 @@ struct BrewResult {
     let output: String
 }
 
+struct CleanupPreview {
+    let count: Int
+    /// brew's own line, e.g. "This operation would free approximately 17.6GB of disk space."
+    let summary: String?
+}
+
 enum Brew {
-    static let path = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/brew"
+    /// `BODEGA_BREW` swaps in a stand-in script for tests (e.g. to see whether a confirmation fires).
+    static let path = ProcessInfo.processInfo.environment["BODEGA_BREW"]
+        ?? ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) }
+        ?? "/opt/homebrew/bin/brew"
 
     /// Runs brew; stdout and stderr are merged so the log shows everything brew says.
     /// `onStart` hands out the process (for Cancel); `onLine` gets each line as brew prints it.
@@ -122,6 +130,14 @@ enum Brew {
         out.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// `brew cleanup -n`: one "Would remove: …" line per entry, plus a summary line when anything is found.
+    static func parseCleanup(_ out: String) -> CleanupPreview {
+        let lines = parseNames(out)
+        let summary = lines.first { $0.contains("would free approximately") }
+        return CleanupPreview(count: lines.filter { $0.hasPrefix("Would remove:") }.count,
+                              summary: summary.map { $0.replacingOccurrences(of: "==> ", with: "") })
     }
 
     /// The list comes from `brew list --versions` (reads the Cellar/Caskroom), not `brew info --installed`,

@@ -49,6 +49,20 @@ import Testing
         #expect(!Brew.isUntrusted(tap: nil, name: "local", trust: [:]))                            // no receipt tap
     }
 
+    @Test func cleanupDryRun() {
+        let out = """
+        Would remove: /opt/homebrew/Cellar/cmake/4.4.3 (4,159 files, 68.7MB)
+        Would remove: /opt/homebrew/Cellar/pcre2/10.47_1 (244 files, 7.2MB)
+        ==> This operation would free approximately 17.6GB of disk space.
+        Warning: Skipping ada-url: most recent version 4.0.0_1 not installed
+        """
+        let p = Brew.parseCleanup(out)
+        #expect(p.count == 2)
+        #expect(p.summary == "This operation would free approximately 17.6GB of disk space.")
+        let none = Brew.parseCleanup("Warning: Skipping ada-url: most recent version 4.0.0_1 not installed\n")
+        #expect(none.count == 0 && none.summary == nil)
+    }
+
     @Test func tapQualifiedOutdatedMatchesShortName() {
         let json: [String: Any] = [
             "formulae": [["name": "datadog-labs/pack/pup", "current_version": "2.0.0"]],
