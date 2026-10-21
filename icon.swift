@@ -1,9 +1,10 @@
-// One-off: draws the Bodega crate icon (Core Graphics only; Apple's terms forbid SF Symbols in app icons).
+// One-off: draws the Bodega cask icon (Core Graphics only; Apple's terms forbid SF Symbols in app icons).
 // Regenerate Resources/AppIcon.icns:
 //   swift icon.swift /tmp/src.png && mkdir /tmp/AppIcon.iconset
 //   for s in 16 32 128 256 512; do sips -z $s $s /tmp/src.png --out /tmp/AppIcon.iconset/icon_${s}x${s}.png
 //     sips -z $((s*2)) $((s*2)) /tmp/src.png --out /tmp/AppIcon.iconset/icon_${s}x${s}@2x.png; done
 //   iconutil -c icns /tmp/AppIcon.iconset -o Resources/AppIcon.icns
+//   sips -z 256 256 /tmp/src.png --out docs/icon.png  # README header
 import AppKit
 
 let size = 1024.0
@@ -19,46 +20,55 @@ let tile = NSRect(x: 100, y: 100, width: 824, height: 824)
 let tilePath = NSBezierPath(roundedRect: tile, xRadius: 185, yRadius: 185)
 NSGradient(starting: color(246, 232, 210), ending: color(226, 204, 172))!.draw(in: tilePath, angle: 90)
 
-// Crate body.
-let crate = NSRect(x: 232, y: 262, width: 560, height: 500)
 let frame = color(110, 66, 34), plank = color(176, 112, 60), seam = color(130, 80, 42)
-frame.setFill()
-NSBezierPath(roundedRect: crate, xRadius: 28, yRadius: 28).fill()
 
-// Three horizontal planks inside the frame, with gaps showing the darker frame.
-let inset = 46.0, gap = 18.0
-let inner = crate.insetBy(dx: inset, dy: inset)
-let plankH = (inner.height - 2 * gap) / 3
-for i in 0..<3 {
-    let r = NSRect(x: inner.minX, y: inner.minY + Double(i) * (plankH + gap), width: inner.width, height: plankH)
-    plank.setFill()
-    NSBezierPath(roundedRect: r, xRadius: 10, yRadius: 10).fill()
-    seam.setStroke()  // wood grain
-    let grain = NSBezierPath()
-    grain.lineWidth = 5
-    grain.move(to: NSPoint(x: r.minX + 40, y: r.midY + 8))
-    grain.curve(to: NSPoint(x: r.maxX - 40, y: r.midY - 6),
-                controlPoint1: NSPoint(x: r.midX - 60, y: r.midY + 30),
-                controlPoint2: NSPoint(x: r.midX + 60, y: r.midY - 30))
-    grain.stroke()
+// One cask seen end-on, centred at the origin with radius 150.
+func drawCask() {
+    let cask = NSRect(x: -150, y: -150, width: 300, height: 300)
+    frame.setFill()  // chime: the ring of stave ends around the head
+    NSBezierPath(ovalIn: cask).fill()
+
+    // Head: three boards clipped to a circle, gaps showing the darker chime.
+    let head = cask.insetBy(dx: 30, dy: 30), hr = head.width / 2
+    let gap = 12.0, boardH = (head.height - 2 * gap) / 3
+    NSGraphicsContext.saveGraphicsState()
+    NSBezierPath(ovalIn: head).addClip()
+    for i in 0..<3 {
+        let b = NSRect(x: head.minX, y: head.minY + Double(i) * (boardH + gap), width: head.width, height: boardH)
+        plank.setFill()
+        NSBezierPath(rect: b).fill()
+        let half = (hr * hr - b.midY * b.midY).squareRoot() - 34  // grain stays inside the circle
+        seam.setStroke()
+        let grain = NSBezierPath()
+        grain.lineWidth = 5
+        grain.move(to: NSPoint(x: -half, y: b.midY + 6))
+        grain.curve(to: NSPoint(x: half, y: b.midY - 4),
+                    controlPoint1: NSPoint(x: -half / 3, y: b.midY + 22),
+                    controlPoint2: NSPoint(x: half / 3, y: b.midY - 22))
+        grain.stroke()
+    }
+    NSGraphicsContext.restoreGraphicsState()
+
+    color(70, 42, 22).setFill()  // nails on the chime
+    for a in stride(from: 45.0, to: 360, by: 90) {
+        let p = NSPoint(x: 135 * cos(a * .pi / 180), y: 135 * sin(a * .pi / 180))
+        NSBezierPath(ovalIn: NSRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)).fill()
+    }
 }
 
-// Diagonal brace across the planks.
-frame.setFill()
-let brace = NSBezierPath()
-brace.move(to: NSPoint(x: inner.minX, y: inner.minY + 20))
-brace.line(to: NSPoint(x: inner.minX + 44, y: inner.minY))
-brace.line(to: NSPoint(x: inner.maxX, y: inner.maxY - 20))
-brace.line(to: NSPoint(x: inner.maxX - 44, y: inner.maxY))
-brace.close()
-brace.fill()
-
-// Nails in the corners.
-color(70, 42, 22).setFill()
-for x in [crate.minX + 23, crate.maxX - 23] {
-    for y in [crate.minY + 23, crate.maxY - 23] {
-        NSBezierPath(ovalIn: NSRect(x: x - 9, y: y - 9, width: 18, height: 18)).fill()
-    }
+// Five casks stacked like a bodega rack: three on the floor, two resting in the grooves above.
+let r = 110.0, rise = r * 3.squareRoot()
+let floorY = 512 - rise / 2
+let spots = [-2.0, 0, 2].map { NSPoint(x: 512 + $0 * r, y: floorY) }
+          + [-1.0, 1].map { NSPoint(x: 512 + $0 * r, y: floorY + rise) }
+for c in spots {
+    NSGraphicsContext.saveGraphicsState()
+    let t = NSAffineTransform()
+    t.translateX(by: c.x, yBy: c.y)
+    t.scale(by: r / 150)
+    t.concat()
+    drawCask()
+    NSGraphicsContext.restoreGraphicsState()
 }
 
 image.unlockFocus()

@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="Bodega icon"></p>
+
 # Bodega
 
 [![CI](https://github.com/asolfre/bodega/actions/workflows/ci.yml/badge.svg)](https://github.com/asolfre/bodega/actions/workflows/ci.yml)
