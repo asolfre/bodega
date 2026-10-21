@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # build.sh uses the commit count as the build number
+      - run: swift --version
+      - name: Unit tests
+        run: swift test --scratch-path "$RUNNER_TEMP/bodega-build"
+      - name: Build Bodega.app
+        run: ./build.sh
+      - name: Check the bundle
+        run: |
+          plist=build.noindex/Bodega.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$plist"
+          /usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$plist"
+          codesign --verify --strict build.noindex/Bodega.app

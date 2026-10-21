@@ -2,3 +2,6 @@ build/
 .build/
 *.app
 build.noindex/
+.DS_Store
+sessions/
+plans/

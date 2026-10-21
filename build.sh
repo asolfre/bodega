@@ -1,8 +1,12 @@
 #!/bin/sh
-# Builds Bodega.app next to this script. SwiftPM scratch lives outside Google Drive to avoid sync churn.
+# Builds Bodega.app next to this script. SwiftPM scratch lives in $TMPDIR, outside the project (keeps synced folders quiet).
 set -eu
 cd "$(dirname "$0")"
 SCRATCH="${TMPDIR:-/tmp}/bodega-build"
+# Command Line Tools 27.0 lack SwiftUI's macro plugin (@State is a macro in the macOS 27 SDK); Xcode has it.
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app ]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 VERSION=0.2.2
 BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 0)  # commit count: ties a build to its commit
 swift build -c release --scratch-path "$SCRATCH"
