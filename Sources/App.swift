@@ -155,7 +155,7 @@ struct ContentView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 200)
                         .accessibilityIdentifier("filter-field")
-                    Button("Refresh") { Task { await model.refresh() } }
+                    Button("Refresh") { Task { await model.perform(["update"]) } }
                         .disabled(model.busy != nil)
                         .accessibilityIdentifier("refresh-button")
                     Button("Update all…") { Task { await model.previewUpgrade() } }
@@ -222,7 +222,8 @@ struct ContentView: View {
             .frame(minHeight: 100)
         }
         .frame(minWidth: 860, minHeight: 520)
-        .task { await model.refresh() }
+        // Not .task: closing the window would cancel it while brew update keeps running.
+        .onAppear { Task { await model.refresh(); await model.perform(["update"]) } }
         .sheet(isPresented: Binding(get: { results != nil }, set: { if !$0 { results = nil } })) {
             SearchSheet(query: query, results: results ?? [], error: searchError) { results = nil }
                 .environmentObject(model)

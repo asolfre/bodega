@@ -55,6 +55,7 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 |---|---|
 | Installed list (version in use first, older versions grey) | `brew list --versions`, the `$(brew --prefix)/opt` links |
 | Outdated, pinned, untrusted-tap labels | `brew outdated --json=v2`, `brew list --pinned`, `brew trust --json=v1` |
+| New versions (at launch and on Refresh) | `brew update`, then the commands above |
 | Search and install | `brew search --formula/--cask`, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
@@ -90,6 +91,10 @@ open -n build.noindex/Bodega.app --env BODEGA_DUMP=/tmp/ui.tsv
 ./parity.sh /tmp/ui.tsv     # expect five "MATCH" lines
 ```
 
+The app runs `brew update` at launch and writes the dump again afterwards: run `parity.sh` only once the
+status line shows the package counts again after the `brew update` exit line
+(`osascript -l JavaScript ui.js read status`).
+
 ### Driving the UI
 
 These need **Accessibility** (and **Screen Recording** for screenshots) for the app that runs them.
@@ -97,6 +102,8 @@ These need **Accessibility** (and **Screen Recording** for screenshots) for the 
 - `ui.js` clicks and reads controls by their accessibility id:
   `osascript -l JavaScript ui.js click update-jq`, `type search-field tree submit`, `read status`,
   `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`.
+  After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
+  so repeat `enabled refresh-button` until it says `enabled` before clicking.
 - `shot.sh out.png` captures the Bodega window, on any display.
 - `fake-brew.sh` stands in for brew so confirmations can be tested safely. A real `cleanup` or
   `upgrade` is only written to `$TMPDIR/bodega/fake-actions.log`; everything else goes to real brew.
@@ -134,6 +141,10 @@ the tests, builds the app on GitHub's runner and publishes `Bodega-<version>-mac
   and Cancel stops it.
 - **Untrusted taps.** brew refuses to load formulae from taps you have not trusted (`brew trust`).
   Bodega labels them; actions on them show brew's error.
+- **brew update** runs at launch and on Refresh. Besides fetching new versions, brew rebuilds pkgconf
+  from source after a macOS update and moves packages that were renamed or moved to another tap.
+  All of it shows in the log, and Cancel stops it. Offline, Bodega keeps the saved data and the log
+  shows brew's error.
 - **Casks** with `auto_updates` or `version :latest` are not in Update all (no `--greedy`).
 - Not included: taps, services, `brew doctor`, sudo prompts.
 
