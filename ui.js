@@ -1,9 +1,12 @@
 // Drives Bodega through Accessibility for end-to-end checks. Needs Accessibility for the calling app.
 // osascript -l JavaScript ui.js click <id> | type <id> <text> [submit] | read <id> | exists <id> | wait <id> [sec]
 //                             | dialog <button title>   (presses a button in the confirmation dialog)
+//                             | close-window            (Cmd-W; the close button is not found while the app is busy)
+// One copy at a time: System Events resolves every control by the name "Bodega", so it would drive the first copy.
 function run(argv) {
   var se = Application("System Events");
   var proc = se.processes.byName("Bodega");
+  if (se.processes.whose({ name: "Bodega" }).length > 1) throw new Error("several Bodega copies are running: quit all but one");
   var cmd = argv[0], id = argv[1];
 
   function ident(el) { try { return el.attributes.byName("AXIdentifier").value(); } catch (e) { return null; } }
@@ -53,6 +56,14 @@ function run(argv) {
   if (cmd === "read") { var el = need(id); try { return String(el.value()); } catch (e) { return String(el.name()); } }
   if (cmd === "exists") { return find(id) ? "yes" : "no"; }
   if (cmd === "enabled") { return need(id).enabled() ? "enabled" : "disabled"; }
+  if (cmd === "close-window") {
+    proc.frontmost = true;
+    delay(0.3);
+    if (!proc.frontmost()) throw new Error("Bodega is not frontmost; Cmd-W would go to another app");
+    se.keystroke("w", { using: "command down" });
+    delay(0.5);
+    return "windows left: " + proc.windows.length;
+  }
   if (cmd === "sheet-text") {
     var texts = [];
     function collectText(el) {

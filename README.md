@@ -95,13 +95,22 @@ The app runs `brew update` at launch and writes the dump again afterwards: run `
 status line shows the package counts again after the `brew update` exit line
 (`osascript -l JavaScript ui.js read status`).
 
+`parity.sh` shows that the app and brew agree on the same saved data, not that the data is fresh. That
+`brew update` fetched shows in the `.git/FETCH_HEAD` times of `$(brew --repository)` and of each tap.
+
+Before Bodega runs a new brew command, read its source in `$(brew --repository)/Library/Homebrew/cmd/`:
+`brew update`, for one, also reinstalls pkgconf and migrates renamed packages (`update-report.rb`).
+
 ### Driving the UI
 
 These need **Accessibility** (and **Screen Recording** for screenshots) for the app that runs them.
+Quit every other Bodega copy first, the installed one too: System Events finds controls by the name
+"Bodega" and drives the first copy, so `ui.js` refuses to run while several are open. All copies also
+write to the same `Bodega.log`.
 
 - `ui.js` clicks and reads controls by their accessibility id:
   `osascript -l JavaScript ui.js click update-jq`, `type search-field tree submit`, `read status`,
-  `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`.
+  `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`, `close-window`.
   After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
   so repeat `enabled refresh-button` until it says `enabled` before clicking.
 - `shot.sh out.png` captures the Bodega window, on any display.
