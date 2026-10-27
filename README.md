@@ -55,8 +55,9 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 |---|---|
 | Installed list (version in use first, older versions grey) | `brew list --versions`, the `$(brew --prefix)/opt` links |
 | Outdated, pinned, untrusted-tap labels | `brew outdated --json=v2`, `brew list --pinned`, `brew trust --json=v1` |
+| Sidebar: Installed, Outdated, Pinned, Formulae, Casks (⌘F filters the section shown) | the same data |
 | New versions (at launch and on Refresh) | `brew update`, then the commands above |
-| Search and install | `brew search --formula/--cask`, `brew install` |
+| Search and install (**Discover** in the sidebar: type a name in the toolbar field, press Return) | `brew search --formula/--cask`, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
 | Clean up | `brew cleanup`, after `brew cleanup -n` |
@@ -109,8 +110,12 @@ Quit every other Bodega copy first, the installed one too: System Events finds c
 write to the same `Bodega.log`.
 
 - `ui.js` clicks and reads controls by their accessibility id:
-  `osascript -l JavaScript ui.js click update-jq`, `type search-field tree submit`, `read status`,
+  `osascript -l JavaScript ui.js click update-jq`, `type filter-field jq`, `read status`,
   `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`, `close-window`.
+  Sidebar sections are chosen with `select sidebar-<name>` (`installed`, `outdated`, `pinned`,
+  `formulae`, `casks`, `discover`). To search Homebrew: `select sidebar-discover`, then
+  `type filter-field tree submit`. Uninstall and Pin sit in each row's ⋯ menu (`click actions-jq`)
+  and right-click menu.
   After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
   so repeat `enabled refresh-button` until it says `enabled` before clicking.
 - `shot.sh out.png` captures the Bodega window, on any display.

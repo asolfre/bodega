@@ -1,5 +1,5 @@
 // Drives Bodega through Accessibility for end-to-end checks. Needs Accessibility for the calling app.
-// osascript -l JavaScript ui.js click <id> | type <id> <text> [submit] | read <id> | exists <id> | wait <id> [sec]
+// osascript -l JavaScript ui.js click <id> | select <id> | type <id> <text> [submit] | read <id> | exists <id> | wait <id> [sec]
 //                             | dialog <button title>   (presses a button in the confirmation dialog)
 //                             | close-window            (Cmd-W; the close button is not found while the app is busy)
 // One copy at a time: System Events resolves every control by the name "Bodega", so it would drive the first copy.
@@ -12,13 +12,18 @@ function run(argv) {
   function ident(el) { try { return el.attributes.byName("AXIdentifier").value(); } catch (e) { return null; } }
   function find(target) {
     // Depth-first with early exit, sheets first; skip columns/scroll bars (they repeat every cell).
-    // Search-sheet controls are only looked for in sheets: walking the 200+ row table takes minutes.
-    var sheetOnly = /^(install-|installed-|no-results|close-results|upgrade-)/.test(target);
+    // Update-sheet controls are only looked for in sheets: walking the 200+ row table takes minutes.
+    var sheetOnly = /^upgrade-/.test(target);
     var roots = [];
     proc.windows().forEach(function (w) { try { w.sheets().forEach(function (s) { roots.push(s); }); } catch (e) {} });
+    // Toolbars before the window: the window's own walk reaches the table first.
+    if (!sheetOnly) proc.windows().forEach(function (w) { try { w.toolbars().forEach(function (t) { roots.push(t); }); } catch (e) {} });
     if (!sheetOnly) proc.windows().forEach(function (w) { roots.push(w); });
     function dfs(el) {
-      if (ident(el) === target) return el;
+      var id = ident(el);
+      if (id === target) return el;
+      // The toolbar search field (.searchable) cannot be given an id: it answers to "filter-field".
+      if (target === "filter-field" && !id) { try { if (el.role() === "AXTextField" && el.subrole() === "AXSearchField") return el; } catch (e) {} }
       var kids; try { kids = el.uiElements(); } catch (e) { return null; }
       for (var i = 0; i < kids.length; i++) {
         var r = ""; try { r = kids[i].role(); } catch (e) {}
@@ -52,6 +57,12 @@ function run(argv) {
     delay(0.2);
     if (argv[3] === "submit") se.keyCode(36);
     return "typed into " + id + ": " + f.value();
+  }
+  if (cmd === "select") {  // sidebar rows: AXPress does not select a list row
+    var row = need(id);
+    while (row.role() !== "AXRow") row = row.attributes.byName("AXParent").value();
+    row.selected = true;
+    return "selected " + id;
   }
   if (cmd === "read") { var el = need(id); try { return String(el.value()); } catch (e) { return String(el.name()); } }
   if (cmd === "exists") { return find(id) ? "yes" : "no"; }
@@ -96,7 +107,7 @@ function run(argv) {
     proc.windows().forEach(function (w) {
       try { w.sheets().forEach(function (s) { queue.push(s); }); } catch (e) {}
       var n = null; try { n = w.name(); } catch (e) {}
-      if (n !== "Bodega") queue.push(w);
+      if (!n || n.indexOf("Bodega") !== 0) queue.push(w);  // main window: "Bodega – <section>"
     });
     while (queue.length) {
       var el = queue.shift(), title = null;
