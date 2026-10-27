@@ -16,9 +16,14 @@ function run(argv) {
     var sheetOnly = /^(install-|installed-|no-results|close-results|upgrade-)/.test(target);
     var roots = [];
     proc.windows().forEach(function (w) { try { w.sheets().forEach(function (s) { roots.push(s); }); } catch (e) {} });
+    // Toolbars before the window: the window's own walk reaches the table first.
+    if (!sheetOnly) proc.windows().forEach(function (w) { try { w.toolbars().forEach(function (t) { roots.push(t); }); } catch (e) {} });
     if (!sheetOnly) proc.windows().forEach(function (w) { roots.push(w); });
     function dfs(el) {
-      if (ident(el) === target) return el;
+      var id = ident(el);
+      if (id === target) return el;
+      // The toolbar search field (.searchable) cannot be given an id: it answers to "filter-field".
+      if (target === "filter-field" && !id) { try { if (el.role() === "AXTextField" && el.subrole() === "AXSearchField") return el; } catch (e) {} }
       var kids; try { kids = el.uiElements(); } catch (e) { return null; }
       for (var i = 0; i < kids.length; i++) {
         var r = ""; try { r = kids[i].role(); } catch (e) {}

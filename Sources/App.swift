@@ -128,10 +128,8 @@ final class BrewModel: ObservableObject {
 struct ContentView: View {
     @EnvironmentObject var model: BrewModel
     @State private var filter = ""
-    @State private var query = ""
-    @State private var searching = false
-    @State private var results: [SearchResult]?
-    @State private var searchError: String?
+    @State private var installing = false
+    @State private var selection: Set<Package.ID> = []
     @State private var pendingUninstall: Package?
 
     var shown: [Package] {
@@ -140,40 +138,8 @@ struct ContentView: View {
 
     var body: some View {
         VSplitView {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    TextField("Search packages to install", text: $query)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 260)
-                        .onSubmit(search)
-                        .accessibilityIdentifier("search-field")
-                    Button("Search", action: search)
-                        .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || searching)
-                        .accessibilityIdentifier("search-button")
-                    Spacer()
-                    TextField("Filter", text: $filter)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 200)
-                        .accessibilityIdentifier("filter-field")
-                    Button("Refresh") { Task { await model.perform(["update"]) } }
-                        .disabled(model.busy != nil)
-                        .accessibilityIdentifier("refresh-button")
-                    Button("Update all…") { Task { await model.previewUpgrade() } }
-                        .disabled(model.busy != nil)
-                        .accessibilityIdentifier("update-all-button")
-                    Button("Clean up…") { Task { await model.previewCleanup() } }
-                        .disabled(model.busy != nil)
-                        .accessibilityIdentifier("cleanup-button")
-                }
-                HStack {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("status")
-                    if model.running != nil {
-                        Button("Cancel") { model.cancel() }.controlSize(.small)
-                            .accessibilityIdentifier("cancel-button")
-                    }
-                }
-                Table(shown) {
+            VStack(spacing: 0) {
+                Table(shown, selection: $selection) {
                     TableColumn("Name") { p in
                         HStack(spacing: 4) {
                             Text(p.name)
@@ -196,37 +162,71 @@ struct ContentView: View {
                     TableColumn("Latest") { p in
                         Text(p.latest ?? "—").foregroundStyle(p.latest == nil ? .secondary : Color.orange)
                     }.width(120)
-                    TableColumn("Actions") { p in
+                    TableColumn("") { p in
                         HStack {
-                            Button("Update") { Task { await model.previewUpgrade(p) } }
-                                .disabled(p.latest == nil || p.pinned || model.busy != nil)
-                                .accessibilityIdentifier("update-\(p.name)")
-                            Button("Uninstall") { pendingUninstall = p }
-                                .disabled(model.busy != nil)
-                                .accessibilityIdentifier("uninstall-\(p.name)")
-                            if p.kind == .formula {
-                                Button(p.pinned ? "Unpin" : "Pin") {
-                                    Task { await model.perform(p.pinned ? "unpin" : "pin", p.name, cask: false) }
-                                }
-                                .disabled(model.busy != nil)
-                                .accessibilityIdentifier("\(p.pinned ? "unpin" : "pin")-\(p.name)")
+                            Spacer()
+                            if p.latest != nil {
+                                Button("Update") { Task { await model.previewUpgrade(p) } }
+                                    .disabled(p.pinned || model.busy != nil)
+                                    .accessibilityIdentifier("update-\(p.name)")
                             }
+                            Menu { actions(p) } label: { Image(systemName: "ellipsis.circle") }
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
+                                .accessibilityIdentifier("actions-\(p.name)")
                         }
-                    }.width(220)
+                    }.width(110)
                 }
+                .contextMenu(forSelectionType: Package.ID.self) { ids in
+                    if ids.count == 1, let p = model.packages.first(where: { $0.id == ids.first }) { actions(p) }
+                }
+                HStack {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("status")
+                    if model.running != nil {
+                        Button("Cancel") { model.cancel() }.controlSize(.small)
+                            .accessibilityIdentifier("cancel-button")
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
             }
-            .padding()
             .frame(minHeight: 300)
 
             LogView(store: model.output)
             .frame(minHeight: 100)
         }
-        .frame(minWidth: 860, minHeight: 520)
+        .frame(minWidth: 760, minHeight: 520)
+        .searchable(text: $filter, placement: .toolbar, prompt: "Filter installed")
+        .toolbar {
+            ToolbarItemGroup {
+                Button { Task { await model.perform(["update"]) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                    .help("Fetch new versions (brew update)")
+                    .disabled(model.busy != nil)
+                    .accessibilityIdentifier("refresh-button")
+                Button { Task { await model.previewCleanup() } } label: { Label("Clean up…", systemImage: "trash") }
+                    .help("Remove old versions and caches (brew cleanup)")
+                    .disabled(model.busy != nil)
+                    .accessibilityIdentifier("cleanup-button")
+                Button { Task { await model.previewUpgrade() } } label: {
+                    Label(outdated == 0 ? "Update all" : "Update all (\(outdated))", systemImage: "arrow.up.circle")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.busy != nil)
+                .accessibilityIdentifier("update-all-button")
+                Button { installing = true } label: { Label("Install…", systemImage: "plus").labelStyle(.titleAndIcon) }
+                    .help("Search Homebrew and install a package (⌘N)")
+                    .keyboardShortcut("n")
+                    .accessibilityIdentifier("add-package-button")
+            }
+        }
         // Not .task: closing the window would cancel it while brew update keeps running.
         .onAppear { Task { await model.refresh(); await model.perform(["update"]) } }
-        .sheet(isPresented: Binding(get: { results != nil }, set: { if !$0 { results = nil } })) {
-            SearchSheet(query: query, results: results ?? [], error: searchError) { results = nil }
-                .environmentObject(model)
+        .sheet(isPresented: $installing) {
+            InstallSheet { installing = false }.environmentObject(model)
         }
         .sheet(isPresented: Binding(get: { model.upgradePreview != nil }, set: { if !$0 { model.upgradePreview = nil } })) {
             UpgradeSheet(preview: model.upgradePreview ?? UpgradePreview()) { confirmed in
@@ -254,12 +254,93 @@ struct ContentView: View {
         }
     }
 
+    /// The row's secondary actions, shared by the ⋯ menu and the right-click menu.
+    @ViewBuilder
+    func actions(_ p: Package) -> some View {
+        Button("Uninstall…") { pendingUninstall = p }
+            .disabled(model.busy != nil)
+            .accessibilityIdentifier("uninstall-\(p.name)")
+        if p.kind == .formula {
+            Button(p.pinned ? "Unpin" : "Pin") {
+                Task { await model.perform(p.pinned ? "unpin" : "pin", p.name, cask: false) }
+            }
+            .disabled(model.busy != nil)
+            .accessibilityIdentifier("\(p.pinned ? "unpin" : "pin")-\(p.name)")
+        }
+    }
+
+    var outdated: Int { model.packages.filter { $0.latest != nil }.count }
+
     var status: String {
         if let b = model.busy { return b }
         if let e = model.loadError { return e }
         let f = model.packages.filter { $0.kind == .formula }.count
-        let outdated = model.packages.filter { $0.latest != nil }.count
         return "\(f) formulae, \(model.packages.count - f) casks, \(outdated) outdated"
+    }
+}
+
+struct InstallSheet: View {
+    @EnvironmentObject var model: BrewModel
+    let close: () -> Void
+    @State private var query = ""
+    @State private var searching = false
+    @State private var results: [SearchResult]?
+    @State private var searchError: String?
+    @FocusState private var focused: Bool
+
+    var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Install a package").font(.headline)
+            HStack {
+                TextField("Formula or cask name, e.g. ripgrep", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focused)
+                    .onSubmit(search)
+                    .accessibilityIdentifier("search-field")
+                Button("Search", action: search)
+                    .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || searching)
+                    .accessibilityIdentifier("search-button")
+            }
+            if let searchError { Text(searchError).foregroundStyle(.red) }
+            Group {
+                if searching {
+                    ProgressView()
+                } else if let results, results.isEmpty {
+                    Text("No results").foregroundStyle(.secondary)
+                        .accessibilityIdentifier("no-results")
+                } else if let results {
+                    List(results) { r in
+                        HStack {
+                            Text(r.name)
+                            Spacer()
+                            Text(r.kind.rawValue).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
+                            if installed.contains("\(r.kind.rawValue):\(r.shortName)") {
+                                Text("installed").foregroundStyle(.secondary).frame(width: 70)
+                                    .accessibilityIdentifier("installed-\(r.id)")
+                            } else {
+                                Button("Install") {
+                                    close()
+                                    Task { await model.perform("install", r.name, cask: r.kind == .cask) }
+                                }
+                                .disabled(model.busy != nil)
+                                .frame(width: 70)
+                                .accessibilityIdentifier("install-\(r.id)")
+                            }
+                        }
+                    }
+                } else {
+                    Text("Search Homebrew's formulae and casks.").foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 240)
+            HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("close-results") }
+        }
+        .padding()
+        .frame(width: 520)
+        .onAppear { focused = true }
     }
 
     func search() {
@@ -275,58 +356,22 @@ struct ContentView: View {
     }
 }
 
-struct SearchSheet: View {
-    @EnvironmentObject var model: BrewModel
-    let query: String
-    let results: [SearchResult]
-    let error: String?
-    let close: () -> Void
-
-    var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Results for “\(query)”").font(.headline)
-            if let error { Text(error).foregroundStyle(.red) }
-            if results.isEmpty {
-                Text("No results").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 80)
-                    .accessibilityIdentifier("no-results")
-            } else {
-                List(results) { r in
-                    HStack {
-                        Text(r.name)
-                        Spacer()
-                        Text(r.kind.rawValue).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        if installed.contains("\(r.kind.rawValue):\(r.shortName)") {
-                            Text("installed").foregroundStyle(.secondary).frame(width: 70)
-                                .accessibilityIdentifier("installed-\(r.id)")
-                        } else {
-                            Button("Install") {
-                                close()
-                                Task { await model.perform("install", r.name, cask: r.kind == .cask) }
-                            }
-                            .disabled(model.busy != nil)
-                            .frame(width: 70)
-                            .accessibilityIdentifier("install-\(r.id)")
-                        }
-                    }
-                }
-                .frame(minHeight: 240)
-            }
-            HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction)
-                .accessibilityIdentifier("close-results") }
-        }
-        .padding()
-        .frame(width: 520)
-    }
-}
-
 @main
 struct BodegaApp: App {
     @StateObject private var model = BrewModel()
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         WindowGroup("Bodega") { ContentView().environmentObject(model) }
+            .commands {
+                CommandGroup(after: .textEditing) {
+                    // .searchFocused needs macOS 15, so ⌘F reaches the toolbar field through AppKit.
+                    Button("Find") {
+                        (NSApp.keyWindow?.toolbar?.items.first { $0 is NSSearchToolbarItem } as? NSSearchToolbarItem)?
+                            .beginSearchInteraction()
+                    }
+                    .keyboardShortcut("f")
+                }
+            }
     }
 }
 
