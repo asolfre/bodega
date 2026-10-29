@@ -57,7 +57,7 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 | Outdated, pinned, untrusted-tap labels | `brew outdated --json=v2`, `brew list --pinned`, `brew trust --json=v1` |
 | Sidebar: Installed, Outdated, Pinned, Formulae, Casks (⌘F filters the section shown) | the same data |
 | New versions (at launch and on Refresh) | `brew update`, then the commands above |
-| Search and install (**Discover** in the sidebar: type a name in the toolbar field, press Return) | `brew search --formula/--cask`, `brew install` |
+| Search and install (**＋ Install…** in the toolbar, ⌘N: every Homebrew package, narrowed as you type, with the selected one's details; ↑↓ choose, Return installs) | the package list `brew update` keeps in Homebrew's cache, `brew info --json=v2`, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
 | Clean up | `brew cleanup`, after `brew cleanup -n` |
@@ -113,8 +113,8 @@ write to the same `Bodega.log`.
   `osascript -l JavaScript ui.js click update-jq`, `type filter-field jq`, `read status`,
   `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`, `close-window`.
   Sidebar sections are chosen with `select sidebar-<name>` (`installed`, `outdated`, `pinned`,
-  `formulae`, `casks`, `discover`). To search Homebrew: `select sidebar-discover`, then
-  `type filter-field tree submit`. Uninstall and Pin sit in each row's ⋯ menu (`click actions-jq`)
+  `formulae`, `casks`). To search Homebrew: `click add-package-button`, then `type search-field tree`;
+  the first match is selected and its button is `install-formula:tree`. Uninstall and Pin sit in each row's ⋯ menu (`click actions-jq`)
   and right-click menu.
   After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
   so repeat `enabled refresh-button` until it says `enabled` before clicking.
@@ -161,6 +161,8 @@ the tests, builds the app on GitHub's runner and publishes `Bodega-<version>-mac
   All of it shows in the log, and Cancel stops it. Offline, Bodega keeps the saved data and the log
   shows brew's error.
 - **Casks** with `auto_updates` or `version :latest` are not in Update all (no `--greedy`).
+- **Install…** lists Homebrew's official formulae and casks only (third-party taps are not in brew's
+  cached package list). The "ready-made bottle" line covers the package itself, not its dependencies.
 - Not included: taps, services, `brew doctor`, sudo prompts.
 
 ## License
