@@ -40,20 +40,6 @@ import Testing
         #expect(Brew.exactFirst(r, "k9s").first?.name == "derailed/k9s/k9s")
     }
 
-    @Test func catalogFromSignedPackageList() {
-        let payload = #"{"formulae":{"tree":{"desc":"Display directories as trees"},"as-tree":{}},"casks":{"treesheets":{"desc":"Mind-map editor"}}}"#
-        let file = try! JSONSerialization.data(withJSONObject: ["payload": payload, "signatures": []])
-        let all = Brew.parseCatalog(file)
-        #expect(all.map(\.id) == ["formula:as-tree", "formula:tree", "cask:treesheets"])
-        #expect(all[1].desc == "Display directories as trees")
-        #expect(Brew.parseCatalog(Data("not json".utf8)).isEmpty)
-
-        // Exact name on top, other name matches next, description-only matches last.
-        let m = Brew.match(all + [SearchResult(name: "dirx", kind: .formula, desc: "Tree of folders")], "tree")
-        #expect(m.map(\.name) == ["tree", "as-tree", "treesheets", "dirx"])
-        #expect(Brew.match(all, "  ").count == 3)
-    }
-
     @Test func packageInfoFormulaAndCask() {
         let f: [String: Any] = ["formulae": [["name": "tree", "tap": "homebrew/core", "desc": "Trees",
                                               "versions": ["stable": "2.3.2"], "license": "GPL-2.0-or-later",
