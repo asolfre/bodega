@@ -25,12 +25,15 @@ function run(argv) {
       // The toolbar search field (.searchable) cannot be given an id: it answers to "filter-field".
       if (target === "filter-field" && !id) { try { if (el.role() === "AXTextField" && el.subrole() === "AXSearchField") return el; } catch (e) {} }
       var kids; try { kids = el.uiElements(); } catch (e) { return null; }
+      var later = [];  // tables last: their rows take the longest to walk, and most ids are outside them
       for (var i = 0; i < kids.length; i++) {
         var r = ""; try { r = kids[i].role(); } catch (e) {}
         if (r === "AXColumn" || r === "AXScrollBar") continue;
+        if (r === "AXTable" || r === "AXOutline" || r === "AXScrollArea") { later.push(kids[i]); continue; }
         var hit = dfs(kids[i]);
         if (hit) return hit;
       }
+      for (var j = 0; j < later.length; j++) { var h = dfs(later[j]); if (h) return h; }
       return null;
     }
     for (var j = 0; j < roots.length; j++) { var hit = dfs(roots[j]); if (hit) return hit; }

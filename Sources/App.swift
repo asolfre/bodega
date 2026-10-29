@@ -11,7 +11,13 @@ final class BrewModel: ObservableObject {
     @Published var running: Process?
     @Published var cleanupPreview: CleanupPreview?
     @Published var upgradePreview: UpgradePreview?
+    /// Homebrew's whole catalog for Discover/Install; read again each time it is shown, so a brew update shows up.
+    @Published var catalog: [SearchResult]?
     private var cancelled = false
+
+    func loadCatalog() async {
+        catalog = await Task.detached { Brew.catalog() }.value
+    }
 
     /// When set, every refresh writes the listed packages here so the UI state can be diffed against `brew list`.
     let dumpPath = ProcessInfo.processInfo.environment["BODEGA_DUMP"]
@@ -155,14 +161,11 @@ enum SidebarItem: String, Identifiable {
 struct ContentView: View {
     @EnvironmentObject var model: BrewModel
     @State private var section: SidebarItem? = .installed
-    /// One toolbar field: it filters the list, or in Discover it is the Homebrew search (on Return).
+    /// One toolbar field: it filters the list, or in Discover it searches Homebrew's catalog as you type.
     @State private var text = ""
     @State private var selection: Set<Package.ID> = []
     @State private var pendingUninstall: Package?
-    @State private var searching = false
-    @State private var results: [SearchResult]?
-    @State private var searched = ""
-    @State private var searchError: String?
+    @State private var discoverSelection: SearchResult.ID?
 
     var current: SidebarItem { section ?? .installed }
 
@@ -181,7 +184,13 @@ struct ContentView: View {
         } detail: {
             VSplitView {
                 VStack(spacing: 0) {
-                    if current == .discover { discover } else { table }
+                    if current == .discover {
+                        InstallBrowser(query: text, selection: $discoverSelection) { r in
+                            Task { await model.perform("install", r.name, cask: r.kind == .cask) }
+                        }
+                    } else {
+                        table
+                    }
                     HStack {
                         Text(status).font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("status")
@@ -204,8 +213,7 @@ struct ContentView: View {
         }
         .frame(minWidth: 860, minHeight: 520)
         .searchable(text: $text, placement: .toolbar,
-                    prompt: current == .discover ? "Search Homebrew" : "Filter \(current.rawValue.lowercased())")
-        .onSubmit(of: .search) { if current == .discover { search() } }
+                    prompt: current == .discover ? "Search all Homebrew packages" : "Filter \(current.rawValue.lowercased())")
         .toolbar {
             ToolbarItemGroup {
                 Button { Task { await model.perform(["update"]) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
@@ -305,44 +313,6 @@ struct ContentView: View {
         }
     }
 
-    var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
-
-    @ViewBuilder
-    var discover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let searchError { Text(searchError).foregroundStyle(.red) }
-            if searching {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let results, results.isEmpty {
-                Text("No results for “\(searched)”").foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityIdentifier("no-results")
-            } else if let results {
-                Text("Results for “\(searched)”").font(.headline).padding([.top, .horizontal])
-                List(results) { r in
-                    HStack {
-                        Text(r.name)
-                        Spacer()
-                        Text(r.kind.rawValue).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
-                        if installed.contains("\(r.kind.rawValue):\(r.shortName)") {
-                            Text("installed ✓").foregroundStyle(.secondary).frame(width: 80)
-                                .accessibilityIdentifier("installed-\(r.id)")
-                        } else {
-                            Button("Install") { Task { await model.perform("install", r.name, cask: r.kind == .cask) } }
-                                .disabled(model.busy != nil)
-                                .frame(width: 80)
-                                .accessibilityIdentifier("install-\(r.id)")
-                        }
-                    }
-                }
-            } else {
-                Text("Type a formula or cask name in the search field and press Return.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-
     /// The row's secondary actions, shared by the ⋯ menu and the right-click menu.
     @ViewBuilder
     func actions(_ p: Package) -> some View {
@@ -366,18 +336,132 @@ struct ContentView: View {
         let f = model.packages.filter { $0.kind == .formula }.count
         return "\(f) formulae, \(model.packages.count - f) casks, \(outdated) outdated"
     }
+}
 
-    func search() {
-        let q = text.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty, !searching else { return }
-        searching = true
-        searched = q
-        Task {
-            do { results = try await Brew.search(q); searchError = nil } catch {
-                results = []; searchError = error.localizedDescription
+/// Homebrew's whole catalog, narrowed by `query` as it changes, with the selected package's details beside it.
+/// The first match is selected on every change of `query`, so the panel always shows what Return or Install takes.
+struct InstallBrowser: View {
+    @EnvironmentObject var model: BrewModel
+    let query: String
+    @Binding var selection: SearchResult.ID?
+    let install: (SearchResult) -> Void
+
+    var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
+    func isInstalled(_ r: SearchResult) -> Bool { installed.contains("\(r.kind.rawValue):\(r.shortName)") }
+
+    var body: some View {
+        let all = model.catalog ?? []
+        let results = Brew.match(all, query)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                if model.catalog == nil {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if all.isEmpty {
+                    Text("Homebrew's package list is not downloaded yet. Click Refresh, then come back.")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if results.isEmpty {
+                    Text("No package matches “\(query)”").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("no-results")
+                } else {
+                    Text(query.trimmingCharacters(in: .whitespaces).isEmpty
+                         ? "\(all.count.formatted()) packages" : "\(results.count.formatted()) of \(all.count.formatted()) packages")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .accessibilityIdentifier("results-count")
+                    Table(results, selection: $selection) {
+                        TableColumn("Name") { r in Text(r.name).bold().accessibilityIdentifier("result-\(r.id)") }
+                            .width(min: 90, ideal: 140)
+                        TableColumn("Type") { Text($0.kind.rawValue).foregroundStyle(.secondary) }.width(60)
+                        TableColumn("Description") { Text($0.desc).foregroundStyle(.secondary) }
+                        TableColumn("") { r in
+                            if isInstalled(r) {
+                                Text("✓ installed").foregroundStyle(.green).accessibilityIdentifier("installed-\(r.id)")
+                            }
+                        }.width(80)
+                    }
+                }
             }
-            searching = false
+            .frame(maxWidth: .infinity)
+            Divider()
+            InfoPanel(result: results.first { $0.id == selection }, installed: isInstalled, install: install)
         }
+        .task { await model.loadCatalog() }
+        .onChange(of: query) { selection = Brew.match(model.catalog ?? [], query).first?.id }
+    }
+}
+
+/// What a package is, before it is installed: `brew info` for the selection, asked 0.25 s after it settles.
+struct InfoPanel: View {
+    @EnvironmentObject var model: BrewModel
+    let result: SearchResult?
+    let installed: (SearchResult) -> Bool
+    let install: (SearchResult) -> Void
+    @State private var info: PackageInfo?
+    @State private var loading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let r = result {
+                Text(r.name).font(.title3).bold().textSelection(.enabled)
+                let desc = r.desc.isEmpty ? info?.desc ?? "" : r.desc
+                if !desc.isEmpty { Text(desc).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                if let info {
+                    Grid(alignment: .leading, verticalSpacing: 4) {
+                        line("Version", info.version)
+                        if let url = URL(string: info.homepage), let host = url.host() {
+                            GridRow { Text("Homepage").foregroundStyle(.secondary); Link(host, destination: url) }
+                        }
+                        line("License", info.license)
+                        line("Needs", info.dependencies.isEmpty ? "nothing else" : info.dependencies.joined(separator: ", "))
+                        if let compiles = info.compiles {
+                            GridRow {
+                                Text("This Mac").foregroundStyle(.secondary)
+                                Text(compiles ? "builds from source, can take long" : "✓ ready-made bottle")
+                                    .foregroundStyle(compiles ? .orange : .green)
+                            }
+                        }
+                    }
+                    .font(.callout)
+                    if !info.caveats.isEmpty {
+                        ScrollView { Text(info.caveats).font(.caption).textSelection(.enabled) }.frame(maxHeight: 120)
+                    }
+                } else if loading {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                if installed(r) {
+                    Text("Installed").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                } else {
+                    Button { install(r) } label: { Text("Install \(r.shortName)").frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(model.busy != nil)
+                        .accessibilityIdentifier("install-\(r.id)")
+                }
+            } else {
+                Text("Select a package to see what it is.").foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .padding()
+        .frame(width: 250, alignment: .topLeading)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .task(id: result?.id) {
+            info = nil
+            guard let result else { return }
+            loading = true
+            defer { loading = false }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let fetched = await Brew.info(result)
+            if !Task.isCancelled { info = fetched }
+        }
+    }
+
+    @ViewBuilder
+    func line(_ label: String, _ value: String) -> some View {
+        if !value.isEmpty { GridRow { Text(label).foregroundStyle(.secondary); Text(value).textSelection(.enabled) } }
     }
 }
 

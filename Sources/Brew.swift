@@ -24,9 +24,25 @@ struct Package: Identifiable, Hashable {
 struct SearchResult: Identifiable, Hashable {
     let name: String
     let kind: Package.Kind
+    let desc: String
+    /// Lowercased once here: lowercasing 16,000 entries on every keystroke made typing lag.
+    let lowerName: String, lowerDesc: String
+    init(name: String, kind: Package.Kind, desc: String = "") {
+        self.name = name; self.kind = kind; self.desc = desc
+        lowerName = String(name.split(separator: "/").last ?? Substring(name)).lowercased()
+        lowerDesc = desc.lowercased()
+    }
     var id: String { "\(kind.rawValue):\(name)" }
     /// brew list shows short names, so "installed" is decided on the part after the last "/".
     var shortName: String { String(name.split(separator: "/").last ?? Substring(name)) }
+}
+
+struct PackageInfo {
+    var desc, version, homepage, license: String
+    var dependencies: [String]
+    var caveats: String
+    /// The formula itself has no bottle for this Mac; nil for casks or when unknown. Dependencies are not checked.
+    var compiles: Bool?
 }
 
 struct BrewResult {
@@ -143,14 +159,79 @@ enum Brew {
         }.value
     }
 
-    /// Formula and cask search in parallel. Names can be tap-qualified (datadog-labs/pack/pup).
-    static func search(_ query: String) async throws -> [SearchResult] {
-        async let f = stdout(["search", "--formula", query])
-        async let c = stdout(["search", "--cask", query])
-        let (fr, cr) = try await (f, c)
-        let all = parseNames(String(decoding: fr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .formula) }
-            + parseNames(String(decoding: cr.1, as: UTF8.self)).map { SearchResult(name: $0, kind: .cask) }
-        return exactFirst(all, query)
+    static let cacheDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HOMEBREW_CACHE"]
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/Homebrew").path)
+
+    /// Every formula and cask in Homebrew's official taps, read from the package list `brew update` keeps in
+    /// its cache, so search is instant and runs no brew process. Falls back to the names-only lists; empty when
+    /// neither is there yet. Third-party taps are not in it.
+    /// ponytail: reads brew's internal cache format (api/internal/packages.<tag>.jws.json); if brew changes it,
+    /// only names show until this is updated.
+    static func catalog() -> [SearchResult] {
+        let api = cacheDir.appendingPathComponent("api")
+        let internalDir = api.appendingPathComponent("internal")
+        let files = (try? FileManager.default.contentsOfDirectory(at: internalDir, includingPropertiesForKeys: nil)) ?? []
+        if let file = files.first(where: { $0.lastPathComponent.hasPrefix("packages.") && $0.pathExtension == "json" }),
+           let data = try? Data(contentsOf: file) {
+            let all = parseCatalog(data)
+            if !all.isEmpty { return all }
+        }
+        func names(_ file: String, _ kind: Package.Kind) -> [SearchResult] {
+            let text = (try? String(contentsOf: api.appendingPathComponent(file), encoding: .utf8)) ?? ""
+            return parseNames(text).map { SearchResult(name: $0, kind: kind) }
+        }
+        return (names("formula_names.txt", .formula) + names("cask_names.txt", .cask)).sorted { $0.name < $1.name }
+    }
+
+    /// The signed package list: {"payload": "<JSON text>"}, whose "formulae" and "casks" map name → details.
+    static func parseCatalog(_ data: Data) -> [SearchResult] {
+        guard let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = (outer["payload"] as? String)?.data(using: .utf8),
+              let p = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { return [] }
+        func entries(_ key: String, _ kind: Package.Kind) -> [SearchResult] {
+            (p[key] as? [String: [String: Any]] ?? [:]).map {
+                SearchResult(name: $0.key, kind: kind, desc: $0.value["desc"] as? String ?? "")
+            }
+        }
+        return (entries("formulae", .formula) + entries("casks", .cask)).sorted { $0.name < $1.name }
+    }
+
+    /// Name matches first (an exact one on top), then packages whose description mentions the query.
+    static func match(_ all: [SearchResult], _ query: String) -> [SearchResult] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return all }
+        let byName = all.filter { $0.lowerName.contains(q) }
+        let byDesc = all.filter { !$0.lowerName.contains(q) && $0.lowerDesc.contains(q) }
+        return exactFirst(byName, q) + byDesc
+    }
+
+    /// What the details panel shows, from `brew info --json=v2`.
+    static func info(_ r: SearchResult) async -> PackageInfo? {
+        guard let json = try? await json(["info", "--json=v2", r.kind == .cask ? "--cask" : "--formula", r.name])
+        else { return nil }
+        return parseInfo(json, tag: await bottleTag.value)
+    }
+
+    static func parseInfo(_ json: [String: Any], tag: String?) -> PackageInfo? {
+        if let f = (json["formulae"] as? [[String: Any]])?.first {
+            return PackageInfo(desc: f["desc"] as? String ?? "",
+                               version: (f["versions"] as? [String: Any])?["stable"] as? String ?? "",
+                               homepage: f["homepage"] as? String ?? "",
+                               license: f["license"] as? String ?? "",
+                               dependencies: f["dependencies"] as? [String] ?? [],
+                               caveats: f["caveats"] as? String ?? "",
+                               compiles: tag.map { !sourceBuilds(info: json, tag: $0).isEmpty })
+        }
+        if let c = (json["casks"] as? [[String: Any]])?.first {
+            return PackageInfo(desc: c["desc"] as? String ?? "",
+                               version: c["version"] as? String ?? "",
+                               homepage: c["homepage"] as? String ?? "",
+                               license: "",
+                               dependencies: (c["depends_on"] as? [String: Any])?["formula"] as? [String] ?? [],
+                               caveats: c["caveats"] as? String ?? "",
+                               compiles: nil)
+        }
+        return nil
     }
 
     /// An exact name match goes on top: searching "tree" should not bury `tree` under `as-tree`.

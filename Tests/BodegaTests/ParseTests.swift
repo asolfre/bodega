@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Bodega
 
@@ -37,6 +38,40 @@ import Testing
         let r = ["as-tree", "tree", "derailed/k9s/k9s"].map { SearchResult(name: $0, kind: .formula) }
         #expect(Brew.exactFirst(r, "Tree").map(\.name) == ["tree", "as-tree", "derailed/k9s/k9s"])
         #expect(Brew.exactFirst(r, "k9s").first?.name == "derailed/k9s/k9s")
+    }
+
+    @Test func catalogFromSignedPackageList() {
+        let payload = #"{"formulae":{"tree":{"desc":"Display directories as trees"},"as-tree":{}},"casks":{"treesheets":{"desc":"Mind-map editor"}}}"#
+        let file = try! JSONSerialization.data(withJSONObject: ["payload": payload, "signatures": []])
+        let all = Brew.parseCatalog(file)
+        #expect(all.map(\.id) == ["formula:as-tree", "formula:tree", "cask:treesheets"])
+        #expect(all[1].desc == "Display directories as trees")
+        #expect(Brew.parseCatalog(Data("not json".utf8)).isEmpty)
+
+        // Exact name on top, other name matches next, description-only matches last.
+        let m = Brew.match(all + [SearchResult(name: "dirx", kind: .formula, desc: "Tree of folders")], "tree")
+        #expect(m.map(\.name) == ["tree", "as-tree", "treesheets", "dirx"])
+        #expect(Brew.match(all, "  ").count == 3)
+    }
+
+    @Test func packageInfoFormulaAndCask() {
+        let f: [String: Any] = ["formulae": [["name": "tree", "tap": "homebrew/core", "desc": "Trees",
+                                              "versions": ["stable": "2.3.2"], "license": "GPL-2.0-or-later",
+                                              "dependencies": ["pcre2"], "caveats": NSNull(),
+                                              "bottle": ["stable": ["files": ["arm64_sonoma": [:]]]]]]]
+        let info = Brew.parseInfo(f, tag: "arm64_golden_gate")
+        #expect(info?.version == "2.3.2")
+        #expect(info?.dependencies == ["pcre2"])
+        #expect(info?.caveats == "")
+        #expect(info?.compiles == true)  // no bottle for this Mac's tag
+        #expect(Brew.parseInfo(f, tag: "arm64_sonoma")?.compiles == false)
+        #expect(Brew.parseInfo(f, tag: nil)?.compiles == nil)
+
+        let c: [String: Any] = ["casks": [["token": "firefox", "desc": "Web browser", "version": "159.0",
+                                           "depends_on": ["macos": [">=": ["12"]]]]]]
+        #expect(Brew.parseInfo(c, tag: "x")?.version == "159.0")
+        #expect(Brew.parseInfo(c, tag: "x")?.compiles == nil)
+        #expect(Brew.parseInfo([:], tag: nil) == nil)
     }
 
     @Test func untrustedTapRule() {
