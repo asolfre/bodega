@@ -57,7 +57,7 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 | Outdated, pinned, untrusted-tap labels | `brew outdated --json=v2`, `brew list --pinned`, `brew trust --json=v1` |
 | Sidebar: Installed, Outdated, Pinned, Formulae, Casks (⌘F filters the section shown) | the same data |
 | New versions (at launch and on Refresh) | `brew update`, then the commands above |
-| Search and install (**Discover** in the sidebar: every Homebrew package, narrowed as you type in the toolbar field; click one for its details) | the package list `brew update` keeps in Homebrew's cache, `brew info --json=v2`, `brew install` |
+| Search and install (**Discover** in the sidebar: every Homebrew package, narrowed as you type in the toolbar field, Install on each row) | the package list `brew update` keeps in Homebrew's cache, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
 | Clean up | `brew cleanup`, after `brew cleanup -n` |
@@ -114,7 +114,7 @@ write to the same `Bodega.log`.
   `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`, `close-window`.
   Sidebar sections are chosen with `select sidebar-<name>` (`installed`, `outdated`, `pinned`,
   `formulae`, `casks`, `discover`). To search Homebrew: `select sidebar-discover`, then
-  `type filter-field tree`; the first match is selected and its button is `install-formula:tree`. Uninstall and Pin sit in each row's ⋯ menu (`click actions-jq`)
+  `type filter-field tree`; each row's button is `install-formula:tree`. Uninstall and Pin sit in each row's ⋯ menu (`click actions-jq`)
   and right-click menu.
   After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
   so repeat `enabled refresh-button` until it says `enabled` before clicking.
@@ -162,7 +162,7 @@ the tests, builds the app on GitHub's runner and publishes `Bodega-<version>-mac
   shows brew's error.
 - **Casks** with `auto_updates` or `version :latest` are not in Update all (no `--greedy`).
 - **Discover** lists Homebrew's official formulae and casks only (third-party taps are not in brew's
-  cached package list). The "ready-made bottle" line covers the package itself, not its dependencies.
+  cached package list).
 - Not included: taps, services, `brew doctor`, sudo prompts.
 
 ## License

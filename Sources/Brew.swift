@@ -37,14 +37,6 @@ struct SearchResult: Identifiable, Hashable {
     var shortName: String { String(name.split(separator: "/").last ?? Substring(name)) }
 }
 
-struct PackageInfo {
-    var desc, version, homepage, license: String
-    var dependencies: [String]
-    var caveats: String
-    /// The formula itself has no bottle for this Mac; nil for casks or when unknown. Dependencies are not checked.
-    var compiles: Bool?
-}
-
 struct BrewResult {
     let status: Int32
     let output: String
@@ -203,35 +195,6 @@ enum Brew {
         let byName = all.filter { $0.lowerName.contains(q) }
         let byDesc = all.filter { !$0.lowerName.contains(q) && $0.lowerDesc.contains(q) }
         return exactFirst(byName, q) + byDesc
-    }
-
-    /// What the details panel shows, from `brew info --json=v2`.
-    static func info(_ r: SearchResult) async -> PackageInfo? {
-        guard let json = try? await json(["info", "--json=v2", r.kind == .cask ? "--cask" : "--formula", r.name])
-        else { return nil }
-        return parseInfo(json, tag: await bottleTag.value)
-    }
-
-    static func parseInfo(_ json: [String: Any], tag: String?) -> PackageInfo? {
-        if let f = (json["formulae"] as? [[String: Any]])?.first {
-            return PackageInfo(desc: f["desc"] as? String ?? "",
-                               version: (f["versions"] as? [String: Any])?["stable"] as? String ?? "",
-                               homepage: f["homepage"] as? String ?? "",
-                               license: f["license"] as? String ?? "",
-                               dependencies: f["dependencies"] as? [String] ?? [],
-                               caveats: f["caveats"] as? String ?? "",
-                               compiles: tag.map { !sourceBuilds(info: json, tag: $0).isEmpty })
-        }
-        if let c = (json["casks"] as? [[String: Any]])?.first {
-            return PackageInfo(desc: c["desc"] as? String ?? "",
-                               version: c["version"] as? String ?? "",
-                               homepage: c["homepage"] as? String ?? "",
-                               license: "",
-                               dependencies: (c["depends_on"] as? [String: Any])?["formula"] as? [String] ?? [],
-                               caveats: c["caveats"] as? String ?? "",
-                               compiles: nil)
-        }
-        return nil
     }
 
     /// An exact name match goes on top: searching "tree" should not bury `tree` under `as-tree`.

@@ -54,26 +54,6 @@ import Testing
         #expect(Brew.match(all, "  ").count == 3)
     }
 
-    @Test func packageInfoFormulaAndCask() {
-        let f: [String: Any] = ["formulae": [["name": "tree", "tap": "homebrew/core", "desc": "Trees",
-                                              "versions": ["stable": "2.3.2"], "license": "GPL-2.0-or-later",
-                                              "dependencies": ["pcre2"], "caveats": NSNull(),
-                                              "bottle": ["stable": ["files": ["arm64_sonoma": [:]]]]]]]
-        let info = Brew.parseInfo(f, tag: "arm64_golden_gate")
-        #expect(info?.version == "2.3.2")
-        #expect(info?.dependencies == ["pcre2"])
-        #expect(info?.caveats == "")
-        #expect(info?.compiles == true)  // no bottle for this Mac's tag
-        #expect(Brew.parseInfo(f, tag: "arm64_sonoma")?.compiles == false)
-        #expect(Brew.parseInfo(f, tag: nil)?.compiles == nil)
-
-        let c: [String: Any] = ["casks": [["token": "firefox", "desc": "Web browser", "version": "159.0",
-                                           "depends_on": ["macos": [">=": ["12"]]]]]]
-        #expect(Brew.parseInfo(c, tag: "x")?.version == "159.0")
-        #expect(Brew.parseInfo(c, tag: "x")?.compiles == nil)
-        #expect(Brew.parseInfo([:], tag: nil) == nil)
-    }
-
     @Test func untrustedTapRule() {
         let trust: [String: Any] = ["taps": ["mongodb/brew"], "formulae": ["datadog-labs/pack/pup"]]
         #expect(Brew.isUntrusted(tap: "derailed/k9s", name: "k9s", trust: trust))
