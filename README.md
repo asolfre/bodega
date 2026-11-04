@@ -57,7 +57,7 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 | Outdated, pinned, untrusted-tap labels | `brew outdated --json=v2`, `brew list --pinned`, `brew trust --json=v1` |
 | Sidebar: Installed, Outdated, Pinned, Formulae, Casks (⌘F filters the section shown) | the same data |
 | New versions (at launch and on Refresh) | `brew update`, then the commands above |
-| Search and install (**Discover** in the sidebar: every Homebrew package, narrowed as you type in the toolbar field; click one for its details) | the package list `brew update` keeps in Homebrew's cache, `brew info --json=v2`, `brew install` |
+| Search and install (**Discover** in the sidebar: every Homebrew package, narrowed as you type in the toolbar field; right-click for the homepage) | the package list `brew update` keeps in Homebrew's cache, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
 | Clean up | `brew cleanup`, after `brew cleanup -n` |
@@ -68,7 +68,8 @@ would upgrade or install, packages that use it and would be upgraded too, deprec
 one-line warnings (e.g. "pkgconf would be reinstalled due to macOS version mismatch"), and which
 formulae would **compile from source**. brew's own dry run only lists source builds for the packages
 you asked for; Bodega checks every formula involved (an official-tap formula with no bottle for this
-Mac compiles). A single update with nothing else to it starts straight away.
+Mac compiles). A single update with nothing else to it starts straight away. Install does the same
+check (`brew install --dry-run`): a package with dependencies, a source build or a warning asks first.
 
 Every action and each line brew prints is written with a timestamp to `~/Library/Logs/Bodega.log`.
 At launch, a log over 5 MB becomes `Bodega.log.1` and a new one starts.
@@ -119,8 +120,8 @@ write to the same `Bodega.log`.
   After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
   so repeat `enabled refresh-button` until it says `enabled` before clicking.
 - `shot.sh out.png` captures the Bodega window, on any display.
-- `fake-brew.sh` stands in for brew so confirmations can be tested safely. A real `cleanup` or
-  `upgrade` is only written to `$TMPDIR/bodega/fake-actions.log`; everything else goes to real brew.
+- `fake-brew.sh` stands in for brew so confirmations can be tested safely. A real `cleanup`,
+  `upgrade` or `install` is only written to `$TMPDIR/bodega/fake-actions.log`; everything else goes to real brew.
   Copy it to a local folder first (macOS may not let the app run a script from a cloud-synced folder),
   then start the app with it:
 
@@ -162,7 +163,7 @@ the tests, builds the app on GitHub's runner and publishes `Bodega-<version>-mac
   shows brew's error.
 - **Casks** with `auto_updates` or `version :latest` are not in Update all (no `--greedy`).
 - **Discover** lists Homebrew's official formulae and casks only (third-party taps are not in brew's
-  cached package list). The "ready-made bottle" line covers the package itself, not its dependencies.
+  cached package list).
 - Not included: taps, services, `brew doctor`, sudo prompts.
 
 ## License

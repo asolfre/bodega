@@ -88,13 +88,22 @@ final class BrewModel: ObservableObject {
     /// (e.g. one you uninstalled), and the bottle check finds every formula that would compile.
     /// A single-package update with nothing else to it starts straight away.
     func previewUpgrade(_ package: Package? = nil) async {
-        guard busy == nil else { return }
         var command = ["upgrade"]
         if let package { command += package.kind == .cask ? ["--cask", package.name] : [package.name] }
+        await preview(command, single: package != nil)
+    }
+
+    /// Same check before an install: it starts straight away unless it brings dependencies, compiles or warns.
+    func previewInstall(_ r: SearchResult) async {
+        await preview(r.kind == .cask ? ["install", "--cask", r.name] : ["install", r.name], single: true)
+    }
+
+    private func preview(_ command: [String], single: Bool) async {
+        guard busy == nil else { return }
         busy = "Checking what brew \(command.joined(separator: " ")) would do…"
         let preview = await Brew.previewUpgrade(command)
         busy = nil
-        if package != nil, preview.isPlainSingleUpdate {
+        if single, preview.isPlainSingleUpdate {
             await perform(command)
         } else {
             upgradePreview = preview
@@ -167,7 +176,6 @@ struct ContentView: View {
     @State private var text = ""
     @State private var selection: Set<Package.ID> = []
     @State private var pendingUninstall: Package?
-    @State private var discoverSelection: SearchResult.ID?
 
     var current: SidebarItem { section ?? .installed }
 
@@ -187,9 +195,7 @@ struct ContentView: View {
             VSplitView {
                 VStack(spacing: 0) {
                     if current == .discover {
-                        InstallBrowser(query: text, selection: $discoverSelection) { r in
-                            Task { await model.perform("install", r.name, cask: r.kind == .cask) }
-                        }
+                        InstallBrowser(query: text)
                     } else {
                         table
                     }
@@ -340,13 +346,11 @@ struct ContentView: View {
     }
 }
 
-/// Homebrew's whole catalog, narrowed by `query` as it changes, with the selected package's details beside it.
-/// The first match is selected on every change of `query`, so the panel always shows what Return or Install takes.
+/// Homebrew's whole catalog, narrowed by `query` as it changes. Install first shows what brew would do
+/// (dependencies, source builds) when there is anything beyond the package itself.
 struct InstallBrowser: View {
     @EnvironmentObject var model: BrewModel
     let query: String
-    @Binding var selection: SearchResult.ID?
-    let install: (SearchResult) -> Void
 
     var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
     func isInstalled(_ r: SearchResult) -> Bool { installed.contains("\(r.kind.rawValue):\(r.shortName)") }
@@ -354,123 +358,52 @@ struct InstallBrowser: View {
     var body: some View {
         let all = model.catalog ?? []
         let results = Brew.match(all, query)
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                if model.catalog == nil {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if all.isEmpty {
-                    Text("Homebrew's package list is not downloaded yet. Click Refresh, then come back.")
-                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if results.isEmpty {
-                    Text("No package matches “\(query)”").foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityIdentifier("no-results")
-                } else {
-                    Text(query.trimmingCharacters(in: .whitespaces).isEmpty
-                         ? "\(all.count.formatted()) packages" : "\(results.count.formatted()) of \(all.count.formatted()) packages")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .accessibilityIdentifier("results-count")
-                    List(results, selection: $selection) { r in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(r.name).bold().accessibilityIdentifier("result-\(r.id)")
-                                Text(r.kind.rawValue).font(.caption2).foregroundStyle(.secondary)
-                                    .padding(.horizontal, 4)
-                                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(.tertiary))
-                                Spacer()
-                                if isInstalled(r) {
-                                    Text("✓ installed").foregroundStyle(.green).accessibilityIdentifier("installed-\(r.id)")
-                                }
-                            }
-                            if !r.desc.isEmpty {
-                                Text(r.desc).foregroundStyle(.secondary).lineLimit(2)
+        VStack(alignment: .leading, spacing: 0) {
+            if model.catalog == nil {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if all.isEmpty {
+                Text("Homebrew's package list is not downloaded yet. Click Refresh, then come back.")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if results.isEmpty {
+                Text("No package matches “\(query)”").foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("no-results")
+            } else {
+                Text(query.trimmingCharacters(in: .whitespaces).isEmpty
+                     ? "\(all.count.formatted()) packages" : "\(results.count.formatted()) of \(all.count.formatted()) packages")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .accessibilityIdentifier("results-count")
+                List(results) { r in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(r.name).bold().accessibilityIdentifier("result-\(r.id)")
+                            Text(r.kind.rawValue).font(.caption2).foregroundStyle(.secondary)
+                                .padding(.horizontal, 4)
+                                .overlay(RoundedRectangle(cornerRadius: 3).stroke(.tertiary))
+                            Spacer()
+                            if isInstalled(r) {
+                                Text("✓ installed").foregroundStyle(.green).accessibilityIdentifier("installed-\(r.id)")
+                            } else {
+                                Button("Install") { Task { await model.previewInstall(r) } }
+                                    .disabled(model.busy != nil)
+                                    .accessibilityIdentifier("install-\(r.id)")
                             }
                         }
-                        .padding(.vertical, 2)
+                        if !r.desc.isEmpty {
+                            Text(r.desc).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .contextMenu {
+                        if let url = URL(string: r.homepage), url.scheme != nil {
+                            Button("Open Homepage") { NSWorkspace.shared.open(url) }
+                        }
                     }
                 }
             }
-            .frame(maxWidth: .infinity)
-            Divider()
-            InfoPanel(result: results.first { $0.id == selection }, installed: isInstalled, install: install)
         }
         .task { await model.loadCatalog() }
-        .onChange(of: query) { selection = Brew.match(model.catalog ?? [], query).first?.id }
-    }
-}
-
-/// What a package is, before it is installed: `brew info` for the selection, asked 0.25 s after it settles.
-struct InfoPanel: View {
-    @EnvironmentObject var model: BrewModel
-    let result: SearchResult?
-    let installed: (SearchResult) -> Bool
-    let install: (SearchResult) -> Void
-    @State private var info: PackageInfo?
-    @State private var loading = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let r = result {
-                Text(r.name).font(.title3).bold().textSelection(.enabled)
-                let desc = r.desc.isEmpty ? info?.desc ?? "" : r.desc
-                if !desc.isEmpty { Text(desc).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                if let info {
-                    Grid(alignment: .leading, verticalSpacing: 4) {
-                        line("Version", info.version)
-                        if let url = URL(string: info.homepage), let host = url.host() {
-                            GridRow { Text("Homepage").foregroundStyle(.secondary); Link(host, destination: url) }
-                        }
-                        line("License", info.license)
-                        line("Needs", info.dependencies.isEmpty ? "nothing else" : info.dependencies.joined(separator: ", "))
-                        if let compiles = info.compiles {
-                            GridRow {
-                                Text("This Mac").foregroundStyle(.secondary)
-                                Text(compiles ? "builds from source, can take long" : "✓ ready-made bottle")
-                                    .foregroundStyle(compiles ? .orange : .green)
-                            }
-                        }
-                    }
-                    .font(.callout)
-                    if !info.caveats.isEmpty {
-                        ScrollView { Text(info.caveats).font(.caption).textSelection(.enabled) }.frame(maxHeight: 120)
-                    }
-                } else if loading {
-                    ProgressView().controlSize(.small)
-                }
-                Spacer()
-                if installed(r) {
-                    Text("Installed").foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                } else {
-                    Button { install(r) } label: { Text("Install \(r.shortName)").frame(maxWidth: .infinity) }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(model.busy != nil)
-                        .accessibilityIdentifier("install-\(r.id)")
-                }
-            } else {
-                Text("Select a package to see what it is.").foregroundStyle(.secondary)
-                Spacer()
-            }
-        }
-        .padding()
-        .frame(width: 250, alignment: .topLeading)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .task(id: result?.id) {
-            info = nil
-            guard let result else { return }
-            loading = true
-            defer { loading = false }
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            let fetched = await Brew.info(result)
-            if !Task.isCancelled { info = fetched }
-        }
-    }
-
-    @ViewBuilder
-    func line(_ label: String, _ value: String) -> some View {
-        if !value.isEmpty { GridRow { Text(label).foregroundStyle(.secondary); Text(value).textSelection(.enabled) } }
     }
 }
 
@@ -496,16 +429,18 @@ struct BodegaApp: App {
 struct UpgradeSheet: View {
     let preview: UpgradePreview
     let done: (_ confirmed: Bool) -> Void
+    var install: Bool { preview.command.first == "install" }
+    var verb: String { install ? "Install" : "Update" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(preview.upgrades.isEmpty ? "Nothing to update"
-                 : preview.command.count > 1 ? "Update \(preview.command.last ?? "")?"
-                 : "Update \(preview.upgrades.count) packages?")
+            Text(preview.upgrades.isEmpty ? "Nothing to \(verb.lowercased())"
+                 : preview.command.count > 1 ? "\(verb) \(preview.command.last ?? "")?"
+                 : "\(verb) \(preview.upgrades.count) packages?")
                 .font(.headline)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    section("Upgrades", preview.upgrades)
+                    section(install ? "Install" : "Upgrades", preview.upgrades)
                     section("Dependencies that would also be upgraded", preview.dependencyUpgrades)
                     section("Packages that use it, also upgraded", preview.dependentUpgrades)
                     section("New dependencies that would be installed", preview.newDependencies)
@@ -534,7 +469,7 @@ struct UpgradeSheet: View {
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("upgrade-cancel")
                 if !preview.upgrades.isEmpty {
-                    Button("Update") { done(true) }
+                    Button(verb) { done(true) }
                         .accessibilityIdentifier("upgrade-confirm")
                 }
             }

@@ -25,24 +25,17 @@ struct SearchResult: Identifiable, Hashable {
     let name: String
     let kind: Package.Kind
     let desc: String
+    var homepage = ""
     /// Lowercased once here: lowercasing 16,000 entries on every keystroke made typing lag.
     let lowerName: String, lowerDesc: String
-    init(name: String, kind: Package.Kind, desc: String = "") {
-        self.name = name; self.kind = kind; self.desc = desc
+    init(name: String, kind: Package.Kind, desc: String = "", homepage: String = "") {
+        self.name = name; self.kind = kind; self.desc = desc; self.homepage = homepage
         lowerName = String(name.split(separator: "/").last ?? Substring(name)).lowercased()
         lowerDesc = desc.lowercased()
     }
     var id: String { "\(kind.rawValue):\(name)" }
     /// brew list shows short names, so "installed" is decided on the part after the last "/".
     var shortName: String { String(name.split(separator: "/").last ?? Substring(name)) }
-}
-
-struct PackageInfo {
-    var desc, version, homepage, license: String
-    var dependencies: [String]
-    var caveats: String
-    /// The formula itself has no bottle for this Mac; nil for casks or when unknown. Dependencies are not checked.
-    var compiles: Bool?
 }
 
 struct BrewResult {
@@ -59,7 +52,7 @@ struct CleanupPreview {
 /// What `brew upgrade --dry-run` says a `brew upgrade …` would do.
 struct UpgradePreview {
     var command = ["upgrade"]             // what Confirm runs
-    var upgrades: [String] = []           // packages asked for: "llvm@21 21.1.8 -> 21.1.8_1"
+    var upgrades: [String] = []           // packages asked for: "llvm@21 21.1.8 -> 21.1.8_1", or "tree 2.3.2" to install
     var dependencyUpgrades: [String] = [] // pulled in: "node 26.8.2 -> 26.12.0"
     var dependentUpgrades: [String] = []  // packages that use it: "codeburn 0.9.24 -> 0.9.27"
     var newDependencies: [String] = []    // "esbuild 0.28.2"
@@ -195,7 +188,7 @@ enum Brew {
                 if desc.isEmpty, let display = (v["names"] as? [String])?.first {
                     desc = name.hasPrefix("font-") ? "\(display) (font)" : display
                 }
-                return SearchResult(name: name, kind: kind, desc: desc)
+                return SearchResult(name: name, kind: kind, desc: desc, homepage: v["homepage"] as? String ?? "")
             }
         }
         return (entries("formulae", .formula) + entries("casks", .cask)).sorted { $0.name < $1.name }
@@ -210,42 +203,13 @@ enum Brew {
         return exactFirst(byName, q) + byDesc
     }
 
-    /// What the details panel shows, from `brew info --json=v2`.
-    static func info(_ r: SearchResult) async -> PackageInfo? {
-        guard let json = try? await json(["info", "--json=v2", r.kind == .cask ? "--cask" : "--formula", r.name])
-        else { return nil }
-        return parseInfo(json, tag: await bottleTag.value)
-    }
-
-    static func parseInfo(_ json: [String: Any], tag: String?) -> PackageInfo? {
-        if let f = (json["formulae"] as? [[String: Any]])?.first {
-            return PackageInfo(desc: f["desc"] as? String ?? "",
-                               version: (f["versions"] as? [String: Any])?["stable"] as? String ?? "",
-                               homepage: f["homepage"] as? String ?? "",
-                               license: f["license"] as? String ?? "",
-                               dependencies: f["dependencies"] as? [String] ?? [],
-                               caveats: f["caveats"] as? String ?? "",
-                               compiles: tag.map { !sourceBuilds(info: json, tag: $0).isEmpty })
-        }
-        if let c = (json["casks"] as? [[String: Any]])?.first {
-            return PackageInfo(desc: c["desc"] as? String ?? "",
-                               version: c["version"] as? String ?? "",
-                               homepage: c["homepage"] as? String ?? "",
-                               license: "",
-                               dependencies: (c["depends_on"] as? [String: Any])?["formula"] as? [String] ?? [],
-                               caveats: c["caveats"] as? String ?? "",
-                               compiles: nil)
-        }
-        return nil
-    }
-
     /// An exact name match goes on top: searching "tree" should not bury `tree` under `as-tree`.
     static func exactFirst(_ results: [SearchResult], _ query: String) -> [SearchResult] {
         let q = query.lowercased()
         return results.filter { $0.shortName.lowercased() == q } + results.filter { $0.shortName.lowercased() != q }
     }
 
-    /// `brew upgrade --dry-run` stdout: "==> " section headers, then entries. Hint lines mixed into a
+    /// `brew upgrade --dry-run` (and `brew install --dry-run`) stdout: "==> " section headers, then entries. Hint lines mixed into a
     /// section ("Some casks with `auto_updates true` …") are skipped because they do not have an entry's shape.
     /// brew's own "would build from source" section is ignored: it only covers the packages asked for,
     /// not their dependencies (see `sourceBuilds(info:tag:)`).
@@ -257,7 +221,7 @@ enum Brew {
         for line in parseNames(out) {
             if line.hasPrefix("==>") {
                 section = line.contains("Deprecated or disabled") ? .deprecated
-                    : line.contains("Would install") ? .dependencies
+                    : line.contains("Would install") ? (line.contains("dependenc") ? .dependencies : .upgrades)
                     : !line.contains("Would upgrade") ? nil
                     : line.contains("dependent") ? .dependentUpgrades
                     : line.contains("dependenc") ? .dependencyUpgrades : .upgrades
@@ -266,7 +230,9 @@ enum Brew {
             let words = line.split(separator: " ").map(String.init)
             let upgrade = words.count >= 4 && words[2] == "->" ? words.prefix(4).joined(separator: " ") : nil
             switch section {
-            case .upgrades: if let upgrade { p.upgrades.append(upgrade) }
+            case .upgrades:
+                // brew install --dry-run lists what it installs as "tree 2.3.2" (formula) or "iterm2" (cask).
+                if let upgrade { p.upgrades.append(upgrade) } else if words.count <= 2 { p.upgrades.append(words.joined(separator: " ")) }
             case .dependencyUpgrades: if let upgrade { p.dependencyUpgrades.append(upgrade) }
             case .dependentUpgrades: if let upgrade { p.dependentUpgrades.append(upgrade) }
             case .dependencies where words.count == 2: p.newDependencies.append(words.joined(separator: " "))
