@@ -63,6 +63,8 @@ final class BrewModel: ObservableObject {
         Self.writeLog(end)
         busy = nil
         await refresh()
+        // brew update rewrites the package list; reload it if Discover already read it.
+        if args == ["update"], catalog != nil { await loadCatalog() }
     }
 
     /// Same as Ctrl-C in a terminal: brew gets SIGINT and cleans up its own half-done work.
@@ -369,16 +371,23 @@ struct InstallBrowser: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .accessibilityIdentifier("results-count")
-                    Table(results, selection: $selection) {
-                        TableColumn("Name") { r in Text(r.name).bold().accessibilityIdentifier("result-\(r.id)") }
-                            .width(min: 90, ideal: 140)
-                        TableColumn("Type") { Text($0.kind.rawValue).foregroundStyle(.secondary) }.width(60)
-                        TableColumn("Description") { Text($0.desc).foregroundStyle(.secondary) }
-                        TableColumn("") { r in
-                            if isInstalled(r) {
-                                Text("✓ installed").foregroundStyle(.green).accessibilityIdentifier("installed-\(r.id)")
+                    List(results, selection: $selection) { r in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(r.name).bold().accessibilityIdentifier("result-\(r.id)")
+                                Text(r.kind.rawValue).font(.caption2).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 4)
+                                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(.tertiary))
+                                Spacer()
+                                if isInstalled(r) {
+                                    Text("✓ installed").foregroundStyle(.green).accessibilityIdentifier("installed-\(r.id)")
+                                }
                             }
-                        }.width(80)
+                            if !r.desc.isEmpty {
+                                Text(r.desc).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
             }

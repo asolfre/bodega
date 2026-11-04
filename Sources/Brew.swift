@@ -184,13 +184,18 @@ enum Brew {
     }
 
     /// The signed package list: {"payload": "<JSON text>"}, whose "formulae" and "casks" map name → details.
+    /// About 2,600 casks, nearly all fonts, have no description: their display name ("names") stands in.
     static func parseCatalog(_ data: Data) -> [SearchResult] {
         guard let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = (outer["payload"] as? String)?.data(using: .utf8),
               let p = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { return [] }
         func entries(_ key: String, _ kind: Package.Kind) -> [SearchResult] {
-            (p[key] as? [String: [String: Any]] ?? [:]).map {
-                SearchResult(name: $0.key, kind: kind, desc: $0.value["desc"] as? String ?? "")
+            (p[key] as? [String: [String: Any]] ?? [:]).map { name, v in
+                var desc = v["desc"] as? String ?? ""
+                if desc.isEmpty, let display = (v["names"] as? [String])?.first {
+                    desc = name.hasPrefix("font-") ? "\(display) (font)" : display
+                }
+                return SearchResult(name: name, kind: kind, desc: desc)
             }
         }
         return (entries("formulae", .formula) + entries("casks", .cask)).sorted { $0.name < $1.name }

@@ -52,6 +52,12 @@ import Testing
         let m = Brew.match(all + [SearchResult(name: "dirx", kind: .formula, desc: "Tree of folders")], "tree")
         #expect(m.map(\.name) == ["tree", "as-tree", "treesheets", "dirx"])
         #expect(Brew.match(all, "  ").count == 3)
+
+        // A cask with no description shows its display name; fonts say so.
+        let named = #"{"casks":{"font-figtree":{"names":["Figtree"]},"wacom-inkspace":{"names":["Wacom Inkspace"],"desc":""}}}"#
+        let casks = Brew.parseCatalog(try! JSONSerialization.data(withJSONObject: ["payload": named]))
+        #expect(casks.map(\.desc) == ["Figtree (font)", "Wacom Inkspace"])
+        #expect(Brew.match(casks, "inkspace").first?.name == "wacom-inkspace")
     }
 
     @Test func packageInfoFormulaAndCask() {
