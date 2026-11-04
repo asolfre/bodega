@@ -265,6 +265,7 @@ enum Brew {
 
     /// Dry run of `command` plus the bottle check over every formula it would touch.
     static func previewUpgrade(_ command: [String]) async -> UpgradePreview {
+        _ = bottleTag  // starts the tag check now, alongside the dry run (it is ready first), not after it
         let r = try? await capture(command + ["--dry-run"])
         var p = parseUpgradeDryRun(String(decoding: r?.out ?? Data(), as: UTF8.self),
                                    err: String(decoding: r?.err ?? Data(), as: UTF8.self))
