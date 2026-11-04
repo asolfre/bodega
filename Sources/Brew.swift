@@ -21,11 +21,25 @@ struct Package: Identifiable, Hashable {
     }
 }
 
+/// A label on a Discover row: license, status, warnings. `help` is the hover text.
+struct Tag: Hashable {
+    enum Tone { case plain, warning, error }
+    let text: String
+    var tone = Tone.plain
+    var help = ""
+}
+
 struct SearchResult: Identifiable, Hashable {
     let name: String
     let kind: Package.Kind
     let desc: String
     var homepage = ""
+    var version = ""
+    var tags: [Tag] = []
+    /// The GitHub/GitLab/Codeberg project the download comes from, when the homepage is elsewhere.
+    var forge = ""
+    /// Why brew refuses to install it; nil when it can be installed.
+    var disabled: String?
     /// Lowercased once here: lowercasing 16,000 entries on every keystroke made typing lag.
     let lowerName: String, lowerDesc: String
     init(name: String, kind: Package.Kind, desc: String = "", homepage: String = "") {
@@ -178,20 +192,118 @@ enum Brew {
 
     /// The signed package list: {"payload": "<JSON text>"}, whose "formulae" and "casks" map name → details.
     /// About 2,600 casks, nearly all fonts, have no description: their display name ("names") stands in.
-    static func parseCatalog(_ data: Data) -> [SearchResult] {
+    /// `today` (YYYY-MM-DD) decides whether a dated deprecation or disabling has started.
+    static func parseCatalog(_ data: Data, today: String = String(ISO8601DateFormatter().string(from: Date()).prefix(10)))
+        -> [SearchResult] {
         guard let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = (outer["payload"] as? String)?.data(using: .utf8),
               let p = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { return [] }
         func entries(_ key: String, _ kind: Package.Kind) -> [SearchResult] {
-            (p[key] as? [String: [String: Any]] ?? [:]).map { name, v in
-                var desc = v["desc"] as? String ?? ""
-                if desc.isEmpty, let display = (v["names"] as? [String])?.first {
-                    desc = name.hasPrefix("font-") ? "\(display) (font)" : display
-                }
-                return SearchResult(name: name, kind: kind, desc: desc, homepage: v["homepage"] as? String ?? "")
-            }
+            (p[key] as? [String: [String: Any]] ?? [:]).map { catalogEntry($0.key, kind, $0.value, today: today) }
         }
         return (entries("formulae", .formula) + entries("casks", .cask)).sorted { $0.name < $1.name }
+    }
+
+    static func catalogEntry(_ name: String, _ kind: Package.Kind, _ v: [String: Any], today: String) -> SearchResult {
+        var desc = v["desc"] as? String ?? ""
+        if desc.isEmpty, let display = (v["names"] as? [String])?.first {
+            desc = name.hasPrefix("font-") ? "\(display) (font)" : display
+        }
+        let homepage = v["homepage"] as? String ?? ""
+        var r = SearchResult(name: name, kind: kind, desc: desc, homepage: homepage)
+        let formula = kind == .formula
+        r.version = (formula ? v["stable_version"] : v["version"]).map { "\($0)" }?
+            .split(separator: ",").first.map(String.init) ?? ""
+
+        if formula, let license = v["license"], !(license is NSNull) {
+            let (full, count) = licenseText(license)
+            var short = full.count <= 30 ? full
+                : count > 1 ? "\(count) licenses"
+                : full.components(separatedBy: " with ").first.map { "\($0) + exception" } ?? full
+            if short.count > 30 { short = "license" }  // a few very long SPDX names: the hover text has it
+            r.tags.append(Tag(text: short, help: short == full ? "" : full))
+        }
+        // Dated deprecations announce the future: only one whose date has passed counts.
+        func started(_ key: String) -> String? {
+            guard let args = v[key] as? [String: Any] else { return nil }
+            if let date = args[":date"] as? String, date > today { return nil }
+            return reason(args[":because"])
+        }
+        if let why = started("disable_args") {
+            r.disabled = why
+            r.tags.append(Tag(text: why.count <= 22 ? "disabled: \(why)" : "disabled", tone: .error,
+                              help: "brew will not install it: \(why)"))
+        } else if let why = started("deprecate_args") {
+            r.tags.append(Tag(text: why.count <= 22 ? "deprecated: \(why)" : "deprecated", tone: .warning,
+                              help: "Deprecated: \(why). brew may disable it later."))
+        }
+        if formula {
+            if v["bottle_checksum"] == nil {
+                r.tags.append(Tag(text: "no bottle for this Mac", tone: .warning,
+                                  help: "No ready-made build for this Mac: brew would compile it, or refuse it (Linux-only)"))
+            }
+            if v["keg_only_args"] != nil {
+                r.tags.append(Tag(text: "keg-only", help: "Not linked into Homebrew's bin folder; use its full path"))
+            }
+            if v["service_args"] != nil || v["service_run_args"] != nil {
+                r.tags.append(Tag(text: "runs a service", help: "Can run in the background with brew services"))
+            }
+        } else {
+            if v["caveats_rosetta"] as? Bool == true {
+                r.tags.append(Tag(text: "needs Rosetta", tone: .warning, help: "Intel-only app: runs through Rosetta 2"))
+            }
+            if v["auto_updates"] as? Bool == true {
+                r.tags.append(Tag(text: "updates itself", help: "The app updates itself; Update all leaves it alone"))
+            }
+        }
+        if !isForge(homepage), let url = ((formula ? v["stable_url_args"] : v["url_args"]) as? [Any])?.first as? String {
+            r.forge = forgeProject(url) ?? ""
+        }
+        return r
+    }
+
+    /// SPDX text of brew's license value, and how many licenses it names.
+    /// "MIT"; {":any_of": [a, b]} → "a or b"; {":all_of": …} → "a and b"; {"GPL-3.0": {":with": x}} → "GPL-3.0 with x".
+    static func licenseText(_ v: Any) -> (String, Int) {
+        if let s = v as? String { return (s.hasPrefix(":") ? reason(s) : s, 1) }
+        guard let d = v as? [String: Any], let (key, value) = d.first else { return ("", 0) }
+        if key == ":any_of" || key == ":all_of", let list = value as? [Any] {
+            let parts = list.map(licenseText)
+            return (parts.map(\.0).joined(separator: key == ":any_of" ? " or " : " and "), parts.map(\.1).reduce(0, +))
+        }
+        if let with = (value as? [String: Any])?[":with"] as? String { return ("\(key) with \(with)", 1) }
+        return (key, 1)
+    }
+
+    /// ":fails_gatekeeper_check" → "fails gatekeeper check"; a custom message stays as written.
+    static func reason(_ v: Any?) -> String {
+        guard let s = v as? String, !s.isEmpty else { return "no reason given" }
+        return s.hasPrefix(":") ? s.dropFirst().replacingOccurrences(of: "_", with: " ") : s
+    }
+
+    static let forgeHosts = ["github.com", "gitlab.com", "codeberg.org"]
+    static func siteName(_ url: String) -> String {
+        url.contains("codeberg.org") ? "Codeberg" : url.contains("gitlab.com") ? "GitLab" : "GitHub"
+    }
+
+    static func isForge(_ url: String) -> Bool {
+        URL(string: url)?.host().map { forgeHosts.contains($0.replacingOccurrences(of: "www.", with: "")) } ?? false
+    }
+
+    /// "https://github.com/OSGeo/gdal/releases/download/…" → "https://github.com/OSGeo/gdal".
+    static func forgeProject(_ url: String) -> String? {
+        guard isForge(url), let u = URL(string: url), let host = u.host() else { return nil }
+        let parts = u.path.split(separator: "/").prefix(2)
+        guard parts.count == 2 else { return nil }
+        let repo = parts[1].hasSuffix(".git") ? parts[1].dropLast(4) : parts[1]
+        return "https://\(host.replacingOccurrences(of: "www.", with: ""))/\(parts[0])/\(repo)"
+    }
+
+    /// What a link shows: the domain, or "github.com/owner/repo" for a project page.
+    static func linkLabel(_ url: String) -> String {
+        guard let u = URL(string: url), let host = u.host()?.replacingOccurrences(of: "www.", with: "") else { return url }
+        guard forgeHosts.contains(host) else { return host }
+        return ([host] + u.path.split(separator: "/").prefix(2).map(String.init)).joined(separator: "/")
     }
 
     /// Name matches first (an exact one on top), then packages whose description mentions the query.

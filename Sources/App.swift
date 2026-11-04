@@ -355,6 +355,33 @@ struct InstallBrowser: View {
     var installed: Set<String> { Set(model.packages.map { "\($0.kind.rawValue):\($0.name)" }) }
     func isInstalled(_ r: SearchResult) -> Bool { installed.contains("\(r.kind.rawValue):\(r.shortName)") }
 
+    func title(_ r: SearchResult) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(r.name).bold().accessibilityIdentifier("result-\(r.id)")
+            Text(r.version).font(.caption).foregroundStyle(.secondary)
+        }
+        .fixedSize()
+    }
+
+    func tags(_ r: SearchResult) -> some View {
+        ForEach([Tag(text: r.kind.rawValue)] + r.tags, id: \.self, content: tag)
+    }
+
+    func tag(_ t: Tag) -> some View {
+        let color: Color = t.tone == .error ? .red : t.tone == .warning ? .orange : .secondary
+        return Text(t.text).font(.caption2).foregroundStyle(color).lineLimit(1).fixedSize()
+            .padding(.horizontal, 4)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(color.opacity(0.6)))
+            .help(t.help)
+    }
+
+    @ViewBuilder
+    func link(_ url: String, _ label: String) -> some View {
+        if let u = URL(string: url), u.scheme != nil {
+            Link("\(label) ↗", destination: u).lineLimit(1).help(url)
+        }
+    }
+
     var body: some View {
         let all = model.catalog ?? []
         let results = Brew.match(all, query)
@@ -375,29 +402,42 @@ struct InstallBrowser: View {
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .accessibilityIdentifier("results-count")
                 List(results) { r in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(r.name).bold().accessibilityIdentifier("result-\(r.id)")
-                            Text(r.kind.rawValue).font(.caption2).foregroundStyle(.secondary)
-                                .padding(.horizontal, 4)
-                                .overlay(RoundedRectangle(cornerRadius: 3).stroke(.tertiary))
-                            Spacer()
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            // Tags move under the name when the row is too narrow: the name is never cut off.
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 5) { title(r); tags(r) }
+                                VStack(alignment: .leading, spacing: 2) { title(r); HStack(spacing: 5) { tags(r) } }
+                            }
+                            if !r.desc.isEmpty {
+                                Text(r.desc).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .trailing, spacing: 1) {
+                            link(r.homepage, Brew.linkLabel(r.homepage))
+                            if !r.forge.isEmpty { link(r.forge, Brew.siteName(r.forge)) }
+                        }
+                        .font(.callout)
+                        Group {
                             if isInstalled(r) {
                                 Text("✓ installed").foregroundStyle(.green).accessibilityIdentifier("installed-\(r.id)")
                             } else {
                                 Button("Install") { Task { await model.previewInstall(r) } }
-                                    .disabled(model.busy != nil)
+                                    .disabled(model.busy != nil || r.disabled != nil)
+                                    .help(r.disabled.map { "brew will not install it: \($0)" } ?? "")
                                     .accessibilityIdentifier("install-\(r.id)")
                             }
                         }
-                        if !r.desc.isEmpty {
-                            Text(r.desc).foregroundStyle(.secondary).lineLimit(2)
-                        }
+                        .frame(width: 80)
                     }
                     .padding(.vertical, 2)
                     .contextMenu {
                         if let url = URL(string: r.homepage), url.scheme != nil {
                             Button("Open Homepage") { NSWorkspace.shared.open(url) }
+                        }
+                        if let url = URL(string: r.forge), url.scheme != nil {
+                            Button("Open Project Page") { NSWorkspace.shared.open(url) }
                         }
                     }
                 }

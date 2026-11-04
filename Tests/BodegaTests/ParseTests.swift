@@ -60,6 +60,64 @@ import Testing
         #expect(Brew.match(casks, "inkspace").first?.name == "wacom-inkspace")
     }
 
+    @Test func catalogTagsAndLinks() {
+        // Shapes as in brew's package list (2026-11). Today is 2026-11-05.
+        func e(_ name: String, _ v: [String: Any]) -> SearchResult { e(name, .formula, v) }
+        func e(_ name: String, _ kind: Package.Kind, _ v: [String: Any]) -> SearchResult {
+            Brew.catalogEntry(name, kind, v, today: "2026-11-05")
+        }
+        let tree = e("tree", ["stable_version": "2.3.2", "license": "GPL-2.0-or-later", "bottle_checksum": "x",
+                              "homepage": "https://oldmanprogrammer.net/source.php?dir=projects/tree",
+                              "stable_url_args": ["https://github.com/Old-Man-Programmer/tree/archive/refs/tags/2.3.2.tar.gz"]])
+        #expect(tree.version == "2.3.2")
+        #expect(tree.tags.map(\.text) == ["GPL-2.0-or-later"])
+        #expect(tree.forge == "https://github.com/Old-Man-Programmer/tree")
+        #expect(Brew.linkLabel(tree.homepage) == "oldmanprogrammer.net")
+        #expect(tree.disabled == nil)
+
+        // Homepage already on GitHub: no second link; it shows owner/repo.
+        let fd = e("fd", ["license": [":any_of": ["Apache-2.0", "MIT"]], "bottle_checksum": "x",
+                          "homepage": "https://github.com/sharkdp/fd",
+                          "stable_url_args": ["https://github.com/sharkdp/fd/archive/refs/tags/v10.5.1.tar.gz"]])
+        #expect(fd.tags.map(\.text) == ["Apache-2.0 or MIT"])
+        #expect(fd.forge.isEmpty)
+        #expect(Brew.linkLabel(fd.homepage) == "github.com/sharkdp/fd")
+
+        // Long licenses are shortened; the full text is the hover text.
+        let gcc = e("gcc", ["license": ["GPL-3.0-or-later": [":with": "GCC-exception-3.1"]], "bottle_checksum": "x"])
+        #expect(gcc.tags[0] == Tag(text: "GPL-3.0-or-later + exception", help: "GPL-3.0-or-later with GCC-exception-3.1"))
+        let abook = e("abook", ["license": [":all_of": ["GPL-3.0-only", "GPL-2.0-or-later", "BSD-2-Clause"]],
+                                "bottle_checksum": "x"])
+        #expect(abook.tags[0].text == "3 licenses")
+
+        // Deprecation counts once its date has passed; disabling wins over it and blocks Install.
+        let old = e("abcde", ["deprecate_args": [":date": "2025-12-08", ":because": ":unmaintained"], "bottle_checksum": "x",
+                              "license": "GPL-2.0-or-later"])
+        #expect(old.tags.last == Tag(text: "deprecated: unmaintained", tone: .warning,
+                                     help: "Deprecated: unmaintained. brew may disable it later."))
+        let future = e("openssl@3", ["deprecate_args": [":date": "2030-04-08", ":because": ":unmaintained"],
+                                     "bottle_checksum": "x", "license": "Apache-2.0", "keg_only_args": [":versioned_formula"]])
+        #expect(future.tags.map(\.text) == ["Apache-2.0", "keg-only"])
+        let gone = e("1kc-razer", .cask, ["version": "0.4.10", "desc": "Razer", "homepage": "https://github.com/1kc/razer-macos",
+                                          "disable_args": [":date": "2026-09-01", ":because": ":fails_gatekeeper_check"],
+                                          "deprecate_args": [":date": "2025-09-01", ":because": ":fails_gatekeeper_check"]])
+        #expect(gone.disabled == "fails gatekeeper check")
+        #expect(gone.tags.map(\.text) == ["disabled: fails gatekeeper check"])
+
+        // No bottle, service; Rosetta, self-updating, comma version, download on GitHub.
+        let fuse = e("bindfs", ["license": "GPL-2.0-or-later", "service_args": [:]])
+        #expect(fuse.tags.map(\.text) == ["GPL-2.0-or-later", "no bottle for this Mac", "runs a service"])
+        let box = e("86box", .cask, ["version": "6.0,9001", "caveats_rosetta": true, "auto_updates": true,
+                                     "homepage": "https://86box.net/",
+                                     "url_args": ["https://github.com/86Box/86Box/releases/download/v6.0/86Box.zip"]])
+        #expect(box.version == "6.0")
+        #expect(box.tags.map(\.text) == ["needs Rosetta", "updates itself"])
+        #expect(box.forge == "https://github.com/86Box/86Box")
+        #expect(Brew.siteName(box.forge) == "GitHub")
+        #expect(Brew.forgeProject("https://codeberg.org/LGFae/awww.git") == "https://codeberg.org/LGFae/awww")
+        #expect(Brew.forgeProject("https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz") == nil)
+    }
+
     @Test func untrustedTapRule() {
         let trust: [String: Any] = ["taps": ["mongodb/brew"], "formulae": ["datadog-labs/pack/pup"]]
         #expect(Brew.isUntrusted(tap: "derailed/k9s", name: "k9s", trust: trust))
