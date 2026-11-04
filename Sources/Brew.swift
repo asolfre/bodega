@@ -328,7 +328,7 @@ enum Brew {
     /// `brew upgrade --dry-run` (and `brew install --dry-run`) stdout: "==> " section headers, then entries. Hint lines mixed into a
     /// section ("Some casks with `auto_updates true` …") are skipped because they do not have an entry's shape.
     /// brew's own "would build from source" section is ignored: it only covers the packages asked for,
-    /// not their dependencies (see `sourceBuilds(info:tag:)`).
+    /// not their dependencies (see `sourceBuilds(_:)`).
     /// `err` is brew's stderr: one-line warnings become notes; block headers ("…not trusted:") are skipped.
     static func parseUpgradeDryRun(_ out: String, err: String = "") -> UpgradePreview {
         enum Section { case upgrades, dependencyUpgrades, dependentUpgrades, dependencies, deprecated }
@@ -362,36 +362,43 @@ enum Brew {
         return p
     }
 
-    /// A formula compiles when it comes from an official tap and has no bottle for this Mac.
-    /// Third-party taps are skipped: they download ready-made binaries rather than bottles.
-    static func sourceBuilds(info: [String: Any], tag: String) -> [String] {
-        (info["formulae"] as? [[String: Any]] ?? []).compactMap { f in
-            guard let name = f["name"] as? String, (f["tap"] as? String ?? "").hasPrefix("homebrew/") else { return nil }
-            let files = ((f["bottle"] as? [String: Any])?["stable"] as? [String: Any])?["files"] as? [String: Any] ?? [:]
-            return files[tag] == nil && files["all"] == nil ? name : nil
-        }
+    /// A formula compiles when it comes from an official tap and brew has no bottle it would pour on this Mac.
+    /// brew decides that itself (`Formula#bottled?`): on macOS it also takes a bottle built for an older macOS,
+    /// which a check of the bottle list against this Mac's tag missed. Third-party taps are skipped: they
+    /// download ready-made binaries rather than bottles. A formula brew cannot load is skipped too.
+    /// Names are passed as arguments, never put into the Ruby code.
+    static let sourceBuildScript = """
+        ARGV.each do |n|
+          f = begin
+            Formula[n]
+          rescue StandardError
+            next
+          end
+          puts "source: #{f.name}" if f.tap&.official? && !f.bottled?
+        end
+        puts "checked"
+        """
+
+    static func sourceBuilds(_ names: [String]) async -> [String]? {
+        guard let (_, out) = try? await stdout(["ruby", "-e", sourceBuildScript] + names) else { return nil }
+        return parseSourceBuilds(String(decoding: out, as: UTF8.self))
     }
 
-    /// This Mac's bottle tag (e.g. "arm64_golden_gate" on macOS 27), asked once per launch from brew itself.
-    static let bottleTag = Task<String?, Never> {
-        let out = (try? await stdout(["ruby", "-e", "puts Utils::Bottles.tag"]))?.1 ?? Data()
-        let tag = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return tag.isEmpty || tag.contains(" ") ? nil : tag
+    /// nil when the script did not get to its last line (brew failed): "could not check", never "none".
+    static func parseSourceBuilds(_ out: String) -> [String]? {
+        let lines = parseNames(out)
+        guard lines.last == "checked" else { return nil }
+        return lines.compactMap { $0.hasPrefix("source: ") ? String($0.dropFirst("source: ".count)) : nil }
     }
 
     /// Dry run of `command` plus the bottle check over every formula it would touch.
     static func previewUpgrade(_ command: [String]) async -> UpgradePreview {
-        _ = bottleTag  // starts the tag check now, alongside the dry run (it is ready first), not after it
         let r = try? await capture(command + ["--dry-run"])
         var p = parseUpgradeDryRun(String(decoding: r?.out ?? Data(), as: UTF8.self),
                                    err: String(decoding: r?.err ?? Data(), as: UTF8.self))
         p.command = command
         guard !p.names.isEmpty else { return p }
-        if let tag = await bottleTag.value, let info = try? await json(["info", "--json=v2"] + p.names) {
-            p.sourceBuilds = sourceBuilds(info: info, tag: tag)
-        } else {
-            p.sourceBuilds = nil
-        }
+        p.sourceBuilds = await sourceBuilds(p.names)
         return p
     }
 

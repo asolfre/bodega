@@ -316,19 +316,12 @@ import Testing
         #expect(!plain.isPlainSingleUpdate)  // brew would change something else too
     }
 
-    @Test func sourceBuildRule() {
-        func formula(_ name: String, _ tap: String, _ files: [String]) -> [String: Any] {
-            ["name": name, "tap": tap,
-             "bottle": ["stable": ["files": Dictionary(uniqueKeysWithValues: files.map { ($0, [String: Any]()) })]]]
-        }
-        let info: [String: Any] = ["formulae": [
-            formula("node", "homebrew/core", ["arm64_tahoe", "arm64_sequoia"]),  // no bottle for sonoma
-            formula("esbuild", "homebrew/core", ["arm64_sequoia", "arm64_sonoma"]),
-            formula("cowsay", "homebrew/core", ["all"]),                         // bottle for every Mac
-            ["name": "pup", "tap": "datadog-labs/pack"],                         // ships a ready-made binary
-        ]]
-        #expect(Brew.sourceBuilds(info: info, tag: "arm64_sonoma") == ["node"])
-        #expect(Brew.sourceBuilds(info: info, tag: "arm64_sequoia").isEmpty)
+    @Test func sourceBuildOutput() {
+        #expect(Brew.parseSourceBuilds("source: bindfs\nsource: node\nchecked\n") == ["bindfs", "node"])
+        #expect(Brew.parseSourceBuilds("checked\n") == [])
+        // brew stopped before the end (error, killed): unknown, not "nothing compiles".
+        #expect(Brew.parseSourceBuilds("source: bindfs\n") == nil)
+        #expect(Brew.parseSourceBuilds("") == nil)
     }
 
     @Test func tapQualifiedOutdatedMatchesShortName() {

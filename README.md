@@ -71,10 +71,10 @@ Before an update, Bodega shows what brew would really do: the packages you asked
 would upgrade or install, packages that use it and would be upgraded too, deprecated packages, brew's
 one-line warnings (e.g. "pkgconf would be reinstalled due to macOS version mismatch"), and which
 formulae would **compile from source**. brew's own dry run only lists source builds for the packages
-you asked for; Bodega checks every formula involved (an official-tap formula with no bottle that runs on
-your version of macOS compiles). A single update with nothing else to it starts straight away. Install
-does the same check (`brew install --dry-run`): a package with dependencies, a source build or a warning
-asks first.
+you asked for; Bodega asks brew about every formula involved (`Formula#bottled?`: an official-tap formula
+with no bottle brew would pour on your Mac compiles; a bottle built for an older macOS counts, as it does
+for brew). A single update with nothing else to it starts straight away. Install does the same check
+(`brew install --dry-run`): a package with dependencies, a source build or a warning asks first.
 
 Every action and each line brew prints is written with a timestamp to `~/Library/Logs/Bodega.log`.
 At launch, a log over 5 MB becomes `Bodega.log.1` and a new one starts.
