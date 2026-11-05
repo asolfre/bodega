@@ -233,7 +233,7 @@ struct ContentView: View {
                     .disabled(model.busy != nil)
                     .accessibilityIdentifier("cleanup-button")
                 Button { Task { await model.previewUpgrade() } } label: {
-                    Label(outdated == 0 ? "Update all" : "Update all (\(outdated))", systemImage: "arrow.up.circle")
+                    Label(outdated == 0 ? "Update all…" : "Update all (\(outdated))…", systemImage: "arrow.up.circle")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
