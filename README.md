@@ -7,14 +7,17 @@
 [![License: MIT](https://img.shields.io/github/license/asolfre/bodega)](LICENSE)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
 
-**A native macOS Homebrew GUI, built with SwiftUI.** Search, install, update, pin, uninstall and clean up
-formulae and casks, and see every dependency, dependent and source build before an upgrade runs.
+**A native macOS Homebrew GUI, built with SwiftUI.** Browse every Homebrew package with its license, links
+and warnings; install, update, pin, uninstall and clean up formulae and casks; see what your packages depend
+on as a tree; and see every dependency, dependent and source build before an install or upgrade runs.
 Every action is a plain `brew` command; Bodega changes nothing that brew itself would not. No Electron,
 no web view.
 
-![Bodega's main window: installed packages with versions, outdated ones in orange, and the brew output below](docs/screenshot.png)
+![Bodega's main window: installed packages as a tree, each one's dependencies under it, outdated versions in orange, dependencies nothing needs any more tagged "not needed", and the brew output below](docs/screenshot.png)
 
-![The Update sheet for llvm: a dependency and a package that uses it would also be upgraded](docs/update-sheet.png)
+![Discover: every Homebrew package matching "tree", with version, license, warnings such as deprecated or disabled, and links to the homepage and the GitHub project](docs/discover.png)
+
+![The Update sheet for harfbuzz: a dependency that would also be upgraded, five packages that use it, and a new dependency that would be installed](docs/update-sheet.png)
 
 ## Install
 
@@ -116,8 +119,8 @@ write to the same `Bodega.log`.
   `wait <id> [sec]`, `dialog <button>`, `sheet-text`, `sheet-ids`, `enabled <id>`, `close-window`.
   Sidebar sections are chosen with `select sidebar-<name>` (`installed`, `outdated`, `pinned`,
   `formulae`, `casks`, `discover`). To search Homebrew: `select sidebar-discover`, then
-  `type filter-field tree`; the first match is selected and its button is `install-formula:tree`. Uninstall and Pin sit in each row's ⋯ menu (`click actions-jq`)
-  and right-click menu.
+  `type filter-field tree`; each row's button is `install-formula:tree`. Uninstall and Pin sit in each
+  row's ⋯ menu (`click actions-jq`) and right-click menu.
   After launch the rows appear before the buttons work: they stay disabled until `brew update` ends,
   so repeat `enabled refresh-button` until it says `enabled` before clicking.
 - `shot.sh out.png` captures the Bodega window, on any display.
