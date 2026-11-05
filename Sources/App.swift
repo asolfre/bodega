@@ -274,15 +274,16 @@ struct ContentView: View {
                     prompt: current == .discover ? "Search all Homebrew packages" : "Filter \(current.rawValue.lowercased())")
         .toolbar {
             ToolbarItemGroup {
-                if current == .installed {
-                    Picker("View", selection: $asTree) {
-                        Label("List", systemImage: "list.bullet").tag(false)
-                        Label("Tree", systemImage: "list.bullet.indent").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .help("List, or tree: each package's dependencies under it")
-                    .accessibilityIdentifier("view-mode")
+                // Always there, off outside Installed: adding and removing it scattered the toolbar and
+                // collapsed the search field to an icon.
+                Picker("View", selection: $asTree) {
+                    Label("List", systemImage: "list.bullet").tag(false)
+                    Label("Tree", systemImage: "list.bullet.indent").tag(true)
                 }
+                .pickerStyle(.segmented)
+                .disabled(current != .installed)
+                .help("List, or tree: each package's dependencies under it (Installed only)")
+                .accessibilityIdentifier("view-mode")
                 Button { Task { await model.perform(["update"]) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .help("Fetch new versions (brew update)")
                     .disabled(model.busy != nil)
