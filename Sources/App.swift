@@ -14,6 +14,8 @@ final class BrewModel: ObservableObject {
     /// Homebrew's whole catalog for Discover/Install; read again each time it is shown, so a brew update shows up.
     @Published var catalog: [SearchResult]?
     private var cancelled = false
+    /// ⌘N with no window open: the window it opens starts on Discover.
+    var openOnDiscover = false
 
     func loadCatalog() async {
         catalog = await Task.detached { Brew.catalog() }.value
@@ -242,7 +244,14 @@ struct ContentView: View {
             }
         }
         // Not .task: closing the window would cancel it while brew update keeps running.
-        .onAppear { Task { await model.refresh(); await model.perform(["update"]) } }
+        .onAppear {
+            if model.openOnDiscover {
+                model.openOnDiscover = false
+                section = .discover
+                DispatchQueue.main.async(execute: BodegaApp.focusSearch)
+            }
+            Task { await model.refresh(); await model.perform(["update"]) }
+        }
         .focusedSceneValue(\.showDiscover) {
             section = .discover
             DispatchQueue.main.async(execute: BodegaApp.focusSearch)  // after the toolbar shows Discover's field
@@ -456,8 +465,8 @@ struct BodegaApp: App {
     @StateObject private var model = BrewModel()
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
-        WindowGroup("Bodega") { ContentView().environmentObject(model) }
-            .commands { BodegaCommands() }
+        WindowGroup("Bodega", id: "main") { ContentView().environmentObject(model) }
+            .commands { BodegaCommands(model: model) }
     }
 
     /// .searchFocused needs macOS 15, so the toolbar search field is focused through AppKit.
@@ -477,14 +486,25 @@ extension FocusedValues {
 }
 
 struct BodegaCommands: Commands {
+    let model: BrewModel
     @FocusedValue(\.showDiscover) var showDiscover
+    @Environment(\.openWindow) var openWindow
 
     var body: some Commands {
-        // Takes ⌘N from New Window: a second window would only run a second brew update.
+        // ⌘N goes to Discover, so New Bodega Window moves to ⇧⌘N. It stays: after the window is closed,
+        // it is the way back (a Dock click brings no window back).
         CommandGroup(replacing: .newItem) {
-            Button("Discover Packages") { showDiscover?() }
-                .keyboardShortcut("n")
-                .disabled(showDiscover == nil)
+            Button("New Bodega Window") { openWindow(id: "main") }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("Discover Packages") {
+                if let showDiscover {
+                    showDiscover()
+                } else {
+                    model.openOnDiscover = true
+                    openWindow(id: "main")
+                }
+            }
+            .keyboardShortcut("n")
         }
         CommandGroup(after: .textEditing) {
             Button("Find") { BodegaApp.focusSearch() }
