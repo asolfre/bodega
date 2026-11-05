@@ -56,6 +56,7 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 | Installed list (version in use first, older versions grey) | `brew list --versions`, the `$(brew --prefix)/opt` links |
 | Outdated, pinned, untrusted-tap labels | `brew outdated --json=v2`, `brew list --pinned`, `brew trust --json=v1` |
 | Sidebar: Installed, Outdated, Pinned, Formulae, Casks (⌘F filters the section shown) | the same data |
+| Installed as a tree: each package's direct dependencies under it; "not needed" on dependencies nothing installed needs any more (what `brew autoremove` would remove) | each keg's `INSTALL_RECEIPT.json` (`runtime_dependencies`, `installed_on_request`) |
 | New versions (at launch and on Refresh) | `brew update`, then the commands above |
 | Search and install (**Discover** in the sidebar, ⌘N: every Homebrew package, narrowed as you type in the toolbar field; each row shows version, license, warnings (disabled, deprecated, no bottle for this Mac, needs Rosetta) and links to the homepage and the GitHub/Codeberg project) | the package list `brew update` keeps in Homebrew's cache, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |

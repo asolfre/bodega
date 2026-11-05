@@ -171,15 +171,63 @@ enum SidebarItem: String, Identifiable {
     }
 }
 
+struct TagLabel: View {
+    let tag: Tag
+
+    var body: some View {
+        let color: Color = tag.tone == .error ? .red : tag.tone == .warning ? .orange : .secondary
+        Text(tag.text).font(.caption2).foregroundStyle(color).lineLimit(1).fixedSize()
+            .padding(.horizontal, 4)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(color.opacity(0.6)))
+            .help(tag.help)
+    }
+}
+
+/// A row of the Installed table. In the tree its id is the path from the top
+/// ("formula:cargo-c › formula:libssh2"), so a package several others need gets a row under each.
+/// Children are worked out when a row is shown, not for the whole tree up front.
+struct TreeRow: Identifiable {
+    static let separator = " › "
+    let id: String
+    let package: Package
+    /// All installed packages by id; nil in the flat list (no children).
+    let index: [String: Package]?
+
+    init(package: Package, index: [String: Package]? = nil, parent: String? = nil) {
+        self.package = package
+        self.index = index
+        id = parent.map { $0 + Self.separator + package.id } ?? package.id
+    }
+
+    var inTree: Bool { index != nil }
+
+    var children: [TreeRow]? {
+        guard let index else { return nil }
+        let path = id.components(separatedBy: Self.separator)
+        let kids = package.deps.compactMap { index[$0] }.filter { !path.contains($0.id) }.sorted { $0.name < $1.name }
+        return kids.isEmpty ? nil : kids.map { TreeRow(package: $0, index: index, parent: id) }
+    }
+
+    static func packageID(_ rowID: ID) -> Package.ID { rowID.components(separatedBy: separator).last ?? rowID }
+}
+
 struct ContentView: View {
     @EnvironmentObject var model: BrewModel
     @State private var section: SidebarItem? = .installed
     /// One toolbar field: it filters the list, or in Discover it searches Homebrew's catalog as you type.
     @State private var text = ""
-    @State private var selection: Set<Package.ID> = []
+    @State private var selection: Set<TreeRow.ID> = []
     @State private var pendingUninstall: Package?
+    @AppStorage("installedAsTree") private var asTree = false
 
     var current: SidebarItem { section ?? .installed }
+
+    /// The tree only while nothing is typed: a filter shows its matches as a flat list.
+    var rows: [TreeRow] {
+        guard current == .installed, asTree, text.isEmpty else { return shown.map { TreeRow(package: $0) } }
+        let index = Dictionary(model.packages.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return Brew.treeRoots(model.packages).map { TreeRow(package: $0, index: index) }
+    }
 
     var shown: [Package] {
         model.packages.filter { current.includes($0) && (text.isEmpty || $0.name.localizedCaseInsensitiveContains(text)) }
@@ -226,6 +274,15 @@ struct ContentView: View {
                     prompt: current == .discover ? "Search all Homebrew packages" : "Filter \(current.rawValue.lowercased())")
         .toolbar {
             ToolbarItemGroup {
+                if current == .installed {
+                    Picker("View", selection: $asTree) {
+                        Label("List", systemImage: "list.bullet").tag(false)
+                        Label("Tree", systemImage: "list.bullet.indent").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .help("List, or tree: each package's dependencies under it")
+                    .accessibilityIdentifier("view-mode")
+                }
                 Button { Task { await model.perform(["update"]) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .help("Fetch new versions (brew update)")
                     .disabled(model.busy != nil)
@@ -290,10 +347,20 @@ struct ContentView: View {
     }
 
     var table: some View {
-        Table(shown, selection: $selection) {
-            TableColumn("Name") { p in
+        let needed = Brew.needed(model.packages)
+        return Table(rows, children: \.children, selection: $selection) {
+            TableColumn("Name") { (r: TreeRow) in
+                let p = r.package
                 HStack(spacing: 4) {
                     Text(p.name)
+                    if r.inTree, let n = r.children?.count {
+                        Text("\(n) deps").font(.caption).foregroundStyle(.tertiary)
+                    }
+                    if !p.onRequest && !needed.contains(p.id) {
+                        TagLabel(tag: Tag(text: "not needed", tone: .warning,
+                                          help: "Installed as a dependency; nothing installed needs it now"))
+                            .accessibilityIdentifier("not-needed-\(p.name)")
+                    }
                     if p.pinned {
                         Image(systemName: "pin.fill").foregroundStyle(.secondary)
                             .accessibilityIdentifier("pinned-\(p.name)")
@@ -304,16 +371,17 @@ struct ContentView: View {
                     }
                 }
             }
-            TableColumn("Type") { Text($0.kind.rawValue) }.width(70)
-            TableColumn("Installed") { p in
-                let v = p.displayVersions
+            TableColumn("Type") { Text($0.package.kind.rawValue) }.width(70)
+            TableColumn("Installed") { r in
+                let v = r.package.displayVersions
                 (Text(v.first ?? "")
                  + Text(v.count > 1 ? " " + v.dropFirst().joined(separator: " ") : "").foregroundColor(.secondary))
             }.width(120)
-            TableColumn("Latest") { p in
-                Text(p.latest ?? "—").foregroundStyle(p.latest == nil ? .secondary : Color.orange)
+            TableColumn("Latest") { r in
+                Text(r.package.latest ?? "—").foregroundStyle(r.package.latest == nil ? .secondary : Color.orange)
             }.width(120)
-            TableColumn("") { p in
+            TableColumn("") { r in
+                let p = r.package
                 HStack {
                     Spacer()
                     if p.latest != nil {
@@ -329,8 +397,9 @@ struct ContentView: View {
                 }
             }.width(110)
         }
-        .contextMenu(forSelectionType: Package.ID.self) { ids in
-            if ids.count == 1, let p = model.packages.first(where: { $0.id == ids.first }) { actions(p) }
+        .contextMenu(forSelectionType: TreeRow.ID.self) { ids in
+            if ids.count == 1, let id = ids.first,
+               let p = model.packages.first(where: { $0.id == TreeRow.packageID(id) }) { actions(p) }
         }
     }
 
@@ -377,16 +446,9 @@ struct InstallBrowser: View {
     }
 
     func tags(_ r: SearchResult) -> some View {
-        ForEach([Tag(text: r.kind.rawValue)] + r.tags, id: \.self, content: tag)
+        ForEach([Tag(text: r.kind.rawValue)] + r.tags, id: \.self) { TagLabel(tag: $0) }
     }
 
-    func tag(_ t: Tag) -> some View {
-        let color: Color = t.tone == .error ? .red : t.tone == .warning ? .orange : .secondary
-        return Text(t.text).font(.caption2).foregroundStyle(color).lineLimit(1).fixedSize()
-            .padding(.horizontal, 4)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(color.opacity(0.6)))
-            .help(t.help)
-    }
 
     @ViewBuilder
     func link(_ url: String, _ label: String) -> some View {

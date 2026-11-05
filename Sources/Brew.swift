@@ -12,6 +12,10 @@ struct Package: Identifiable, Hashable {
     var pinned = false
     /// Installed from a tap that is neither official nor trusted: brew refuses to load it.
     var untrusted = false
+    /// Ids ("formula:openssl@4") of the packages it needs directly, from its install receipt.
+    var deps: [String] = []
+    /// False when brew installed it only as a dependency.
+    var onRequest = true
     var id: String { "\(kind.rawValue):\(name)" }
     var version: String { versions.joined(separator: " ") }
     /// Active version first, then the others, so the version in use is always the first one shown.
@@ -435,16 +439,59 @@ enum Brew {
             pkgs[i].active = link.map { ($0 as NSString).lastPathComponent }
             pkgs[i].pinned = pinned.contains(name)
             let keg = pkgs[i].active ?? pkgs[i].versions.last ?? ""
-            let receipt = prefix.appendingPathComponent("Cellar/\(name)/\(keg)/INSTALL_RECEIPT.json")
-            pkgs[i].untrusted = isUntrusted(tap: receiptTap(receipt), name: name, trust: trust)
+            let r = receipt(prefix.appendingPathComponent("Cellar/\(name)/\(keg)/INSTALL_RECEIPT.json"))
+            pkgs[i].untrusted = isUntrusted(tap: r?.tap, name: name, trust: trust)
+            pkgs[i].deps = r?.deps ?? []
+            pkgs[i].onRequest = r?.onRequest ?? true
+        }
+        for i in pkgs.indices where pkgs[i].kind == .cask {
+            let r = receipt(prefix.appendingPathComponent("Caskroom/\(pkgs[i].name)/.metadata/INSTALL_RECEIPT.json"))
+            pkgs[i].deps = r?.deps ?? []
+            pkgs[i].onRequest = r?.onRequest ?? true
         }
         return pkgs.sorted { $0.name < $1.name }
     }
 
-    static func receiptTap(_ url: URL) -> String? {
+    struct Receipt: Equatable {
+        var tap: String?
+        var deps: [String] = []
+        var onRequest = true
+    }
+
+    static func receipt(_ url: URL) -> Receipt? {
         guard let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return (json["source"] as? [String: Any])?["tap"] as? String
+        return parseReceipt(json)
+    }
+
+    /// INSTALL_RECEIPT.json, read without brew (brew would skip formulae from untrusted taps).
+    /// "runtime_dependencies" is a list for a formula and {"formula": […], "cask": […]} for a cask; only the
+    /// ones declared directly count, so each package shows under the packages that really asked for it.
+    /// A receipt from before brew marked direct ones lists them all. Unknown "installed_on_request": treated
+    /// as installed on request, so nothing is called unneeded by mistake.
+    static func parseReceipt(_ json: [String: Any]) -> Receipt {
+        func direct(_ list: Any?, _ kind: Package.Kind) -> [String] {
+            let all = list as? [[String: Any]] ?? []
+            let marked = all.contains { $0["declared_directly"] != nil }
+            return all.compactMap { d in
+                guard !marked || d["declared_directly"] as? Bool == true, let n = d["full_name"] as? String else { return nil }
+                return "\(kind.rawValue):\(n.split(separator: "/").last.map(String.init) ?? n)"
+            }
+        }
+        let runtime = json["runtime_dependencies"]
+        let deps = (runtime as? [String: Any]).map { direct($0["formula"], .formula) + direct($0["cask"], .cask) }
+            ?? direct(runtime, .formula)
+        return Receipt(tap: (json["source"] as? [String: Any])?["tap"] as? String, deps: deps,
+                       onRequest: json["installed_on_request"] as? Bool ?? true)
+    }
+
+    /// Ids of the packages another installed package needs directly.
+    static func needed(_ pkgs: [Package]) -> Set<String> { Set(pkgs.flatMap(\.deps)) }
+
+    /// The tree's top level: the packages nothing else needs (what `brew leaves` lists, plus casks).
+    static func treeRoots(_ pkgs: [Package]) -> [Package] {
+        let n = needed(pkgs)
+        return pkgs.filter { !n.contains($0.id) }
     }
 
     /// Official taps are always trusted; others only when the tap or the formula is in `brew trust --json=v1`.

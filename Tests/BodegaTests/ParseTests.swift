@@ -118,6 +118,62 @@ import Testing
         #expect(Brew.forgeProject("https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz") == nil)
     }
 
+    @Test func installReceipts() {
+        // Formula receipt: a list; only direct dependencies count; tap-qualified names become short ids.
+        let f = Brew.parseReceipt([
+            "installed_on_request": false, "source": ["tap": "homebrew/core"],
+            "runtime_dependencies": [
+                ["full_name": "libgit2", "version": "1.9.7", "declared_directly": true],
+                ["full_name": "llhttp", "version": "9.4.3", "declared_directly": false],
+                ["full_name": "someone/tap/libssh2", "version": "1.11.1", "declared_directly": true],
+            ],
+        ])
+        #expect(f == Brew.Receipt(tap: "homebrew/core", deps: ["formula:libgit2", "formula:libssh2"], onRequest: false))
+        // Older receipts do not mark direct ones: all of them count.
+        #expect(Brew.parseReceipt(["runtime_dependencies": [["full_name": "zstd"], ["full_name": "xz"]]]).deps
+                == ["formula:zstd", "formula:xz"])
+        // Cask receipt: {"formula": […], "cask": […]}; "{}" when there are none, as for all casks here.
+        let c = Brew.parseReceipt(["installed_on_request": true, "runtime_dependencies": [
+            "formula": [["full_name": "openssl@4", "declared_directly": true]],
+            "cask": [["full_name": "temurin", "declared_directly": true]],
+        ]])
+        #expect(c.deps == ["formula:openssl@4", "cask:temurin"])
+        #expect(Brew.parseReceipt(["runtime_dependencies": [String: Any]()]).deps.isEmpty)
+        // No installed_on_request: never called unneeded by mistake.
+        #expect(Brew.parseReceipt([:]).onRequest)
+    }
+
+    @Test func dependencyTree() {
+        func f(_ name: String, _ deps: [String] = [], onRequest: Bool = true) -> Package {
+            var p = Package(name: name, versions: ["1"], kind: .formula)
+            p.deps = deps.map { "formula:\($0)" }
+            p.onRequest = onRequest
+            return p
+        }
+        // cargo-c needs libgit2 and libssh2; libgit2 needs libssh2 too (a diamond); go is a leftover build tool.
+        let pkgs = [f("cargo-c", ["libgit2", "libssh2", "gone"]), f("libgit2", ["libssh2"]), f("libssh2", onRequest: false),
+                    f("go", onRequest: false), f("jq")]
+        #expect(Brew.treeRoots(pkgs).map(\.name) == ["cargo-c", "go", "jq"])
+        let needed = Brew.needed(pkgs)
+        #expect(pkgs.filter { !$0.onRequest && !needed.contains($0.id) }.map(\.name) == ["go"])  // "not needed"
+
+        let index = Dictionary(uniqueKeysWithValues: pkgs.map { ($0.id, $0) })
+        let top = TreeRow(package: pkgs[0], index: index)
+        let kids = top.children ?? []
+        #expect(kids.map(\.package.name) == ["libgit2", "libssh2"])  // a dependency that is not installed is left out
+        #expect(kids.map(\.id) == ["formula:cargo-c › formula:libgit2", "formula:cargo-c › formula:libssh2"])
+        let deeper = kids[0].children ?? []
+        #expect(deeper.map(\.id) == ["formula:cargo-c › formula:libgit2 › formula:libssh2"])  // libssh2 again, own id
+        #expect(TreeRow.packageID(deeper[0].id) == "formula:libssh2")
+        #expect(deeper[0].children == nil)
+        #expect(TreeRow(package: pkgs[0]).children == nil)  // flat list: no children
+
+        // A cycle (never seen in brew, but a receipt could say so) stops instead of recursing forever.
+        let loop = [f("a", ["b"]), f("b", ["a"])]
+        let li = Dictionary(uniqueKeysWithValues: loop.map { ($0.id, $0) })
+        #expect(TreeRow(package: loop[0], index: li).children?.first?.children == nil)
+    }
+
     @Test func untrustedTapRule() {
         let trust: [String: Any] = ["taps": ["mongodb/brew"], "formulae": ["datadog-labs/pack/pup"]]
         #expect(Brew.isUntrusted(tap: "derailed/k9s", name: "k9s", trust: trust))
