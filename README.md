@@ -61,7 +61,7 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 | Sidebar: Installed, Outdated, Pinned, Formulae, Casks (⌘F filters the section shown) | the same data |
 | Installed as a tree: each package's direct dependencies under it; "not needed" on dependencies nothing installed needs any more (what `brew autoremove` would remove) | each keg's `INSTALL_RECEIPT.json` (`runtime_dependencies`, `installed_on_request`) |
 | New versions (at launch and on Refresh) | `brew update`, then the commands above |
-| Search and install (**Discover** in the sidebar, ⌘N: every Homebrew package, narrowed as you type in the toolbar field; each row shows version, license, warnings (disabled, deprecated, no bottle for this Mac, needs Rosetta) and links to the homepage and the GitHub/Codeberg project) | the package list `brew update` keeps in Homebrew's cache, `brew install` |
+| Search and install (**Discover** in the sidebar, ⌘N: every Homebrew package, narrowed as you type in the toolbar field; each row shows version, license, warnings (disabled, deprecated, "no bottle for this Mac", needs Rosetta) and links to the homepage and the GitHub/Codeberg project) | the package list `brew update` keeps in Homebrew's cache, `brew install` |
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
 | Clean up | `brew cleanup`, after `brew cleanup -n` |
@@ -71,8 +71,8 @@ Before an update, Bodega shows what brew would really do: the packages you asked
 would upgrade or install, packages that use it and would be upgraded too, deprecated packages, brew's
 one-line warnings (e.g. "pkgconf would be reinstalled due to macOS version mismatch"), and which
 formulae would **compile from source**. brew's own dry run only lists source builds for the packages
-you asked for; Bodega checks every formula involved (an official-tap formula with no bottle for this
-Mac compiles). A single update with nothing else to it starts straight away. Install does the same
+you asked for; Bodega checks every formula involved (an official-tap formula with no bottle that runs on
+your version of macOS compiles). A single update with nothing else to it starts straight away. Install does the same
 check (`brew install --dry-run`): a package with dependencies, a source build or a warning asks first.
 
 Every action and each line brew prints is written with a timestamp to `~/Library/Logs/Bodega.log`.
@@ -155,10 +155,10 @@ the tests, builds the app on GitHub's runner and publishes `Bodega-<version>-mac
 
 ## Known limits
 
-- **Source builds.** A formula with no bottle for this Mac compiles from source, which can take hours.
-  That was most updates on macOS 14 (Homebrew Tier 3, no new bottles); on current macOS it is rare.
-  Bodega asks brew for this Mac's bottle tag at every launch, warns before such an update starts,
-  and Cancel stops it.
+- **Source builds.** When Homebrew has no bottle (ready-made build) of a formula that runs on your
+  version of macOS, it compiles it from source, which can take hours. That was most updates on macOS 14
+  (Homebrew Tier 3, no new bottles); on current macOS it is rare. Before an update or install, Bodega
+  checks every formula involved, warns before one would compile, and Cancel stops it.
 - **Untrusted taps.** brew refuses to load formulae from taps you have not trusted (`brew trust`).
   Bodega labels them; actions on them show brew's error.
 - **brew update** runs at launch and on Refresh. Besides fetching new versions, brew rebuilds pkgconf
