@@ -143,7 +143,8 @@ live log), `v0.2.1` (source builds found for every dependency, `brew --prefix`, 
 `v0.2.2` (dependents, deprecated packages and brew's warnings in the update sheet; wording for any macOS),
 `v0.2.3` (first public release: license, CI, release downloads), `v0.2.4` (new icon: five casks),
 `v0.2.5` (brew update at launch and on Refresh), `v0.3.0` (sidebar, Discover with every Homebrew package,
-install checks, installed packages as a dependency tree).
+install checks, installed packages as a dependency tree), `v0.3.1` (bottles built for an older macOS count,
+as they do for brew: fewer false source-build warnings).
 
 ## Releasing
 
