@@ -243,6 +243,10 @@ struct ContentView: View {
         }
         // Not .task: closing the window would cancel it while brew update keeps running.
         .onAppear { Task { await model.refresh(); await model.perform(["update"]) } }
+        .focusedSceneValue(\.showDiscover) {
+            section = .discover
+            DispatchQueue.main.async(execute: BodegaApp.focusSearch)  // after the toolbar shows Discover's field
+        }
         .sheet(isPresented: Binding(get: { model.upgradePreview != nil }, set: { if !$0 { model.upgradePreview = nil } })) {
             UpgradeSheet(preview: model.upgradePreview ?? UpgradePreview()) { confirmed in
                 let command = model.upgradePreview?.command ?? ["upgrade"]
@@ -453,16 +457,39 @@ struct BodegaApp: App {
     init() { NSApplication.shared.setActivationPolicy(.regular) }
     var body: some Scene {
         WindowGroup("Bodega") { ContentView().environmentObject(model) }
-            .commands {
-                CommandGroup(after: .textEditing) {
-                    // .searchFocused needs macOS 15, so ⌘F reaches the toolbar field through AppKit.
-                    Button("Find") {
-                        (NSApp.keyWindow?.toolbar?.items.first { $0 is NSSearchToolbarItem } as? NSSearchToolbarItem)?
-                            .beginSearchInteraction()
-                    }
-                    .keyboardShortcut("f")
-                }
-            }
+            .commands { BodegaCommands() }
+    }
+
+    /// .searchFocused needs macOS 15, so the toolbar search field is focused through AppKit.
+    @MainActor static func focusSearch() {
+        (NSApp.keyWindow?.toolbar?.items.first { $0 is NSSearchToolbarItem } as? NSSearchToolbarItem)?
+            .beginSearchInteraction()
+    }
+}
+
+/// The front window's "go to Discover", for ⌘N.
+struct ShowDiscoverKey: FocusedValueKey { typealias Value = () -> Void }
+extension FocusedValues {
+    var showDiscover: (() -> Void)? {
+        get { self[ShowDiscoverKey.self] }
+        set { self[ShowDiscoverKey.self] = newValue }
+    }
+}
+
+struct BodegaCommands: Commands {
+    @FocusedValue(\.showDiscover) var showDiscover
+
+    var body: some Commands {
+        // Takes ⌘N from New Window: a second window would only run a second brew update.
+        CommandGroup(replacing: .newItem) {
+            Button("Discover Packages") { showDiscover?() }
+                .keyboardShortcut("n")
+                .disabled(showDiscover == nil)
+        }
+        CommandGroup(after: .textEditing) {
+            Button("Find") { BodegaApp.focusSearch() }
+                .keyboardShortcut("f")
+        }
     }
 }
 
