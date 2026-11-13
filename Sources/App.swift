@@ -250,6 +250,7 @@ struct ContentView: View {
                         table
                     }
                     HStack {
+                        if model.busy != nil { ProgressView().controlSize(.small) }
                         Text(status).font(.caption).foregroundStyle(.secondary)
                             .accessibilityIdentifier("status")
                         if model.running != nil {
