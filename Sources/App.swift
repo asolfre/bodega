@@ -63,6 +63,8 @@ final class BrewModel: ObservableObject {
         output.append((r.status == 0 && !cancelled ? "✔ " : "✘ ") + end)
         output.append("")
         Self.writeLog(end)
+        // A failure only shows in the log, so a hidden log opens again.
+        if r.status != 0 && !cancelled { UserDefaults.standard.set(true, forKey: "showLog") }
         busy = nil
         await refresh()
         // brew update rewrites the package list; reload it if Discover already read it.
@@ -219,6 +221,7 @@ struct ContentView: View {
     @State private var selection: Set<TreeRow.ID> = []
     @State private var pendingUninstall: Package?
     @AppStorage("installedAsTree") private var asTree = false
+    @AppStorage("showLog") private var showLog = true
 
     var current: SidebarItem { section ?? .installed }
 
@@ -258,14 +261,19 @@ struct ContentView: View {
                                 .accessibilityIdentifier("cancel-button")
                         }
                         Spacer()
+                        Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }
+                            .buttonStyle(.borderless).controlSize(.small)
+                            .accessibilityIdentifier("log-toggle")
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 6)
                 }
                 .frame(minHeight: 300)
 
-                LogView(store: model.output)
-                .frame(minHeight: 100)
+                if showLog {
+                    LogView(store: model.output)
+                    .frame(minHeight: 100)
+                }
             }
             .navigationTitle("Bodega")
             .navigationSubtitle(current.rawValue)
@@ -689,6 +697,8 @@ struct LogView: View {
             .onChange(of: store.lines.last?.id) { _, id in
                 if let id { proxy.scrollTo(id, anchor: .bottom) }
             }
+            // Shown again after Hide Log: start at the newest line, not the top.
+            .onAppear { if let id = store.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
         }
     }
 }
