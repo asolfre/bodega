@@ -221,7 +221,7 @@ struct ContentView: View {
     @State private var selection: Set<TreeRow.ID> = []
     @State private var pendingUninstall: Package?
     @AppStorage("installedAsTree") private var asTree = false
-    @AppStorage("showLog") private var showLog = true
+    @AppStorage("showLog") private var showLog = false
 
     var current: SidebarItem { section ?? .installed }
 
