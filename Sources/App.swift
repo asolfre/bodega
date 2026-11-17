@@ -11,6 +11,8 @@ final class BrewModel: ObservableObject {
     @Published var running: Process?
     @Published var cleanupPreview: CleanupPreview?
     @Published var upgradePreview: UpgradePreview?
+    /// False until the first load ends: the table shows a spinner instead of empty rows.
+    @Published var loaded = false
     /// Homebrew's whole catalog for Discover/Install; read again each time it is shown, so a brew update shows up.
     @Published var catalog: [SearchResult]?
     private var cancelled = false
@@ -27,7 +29,7 @@ final class BrewModel: ObservableObject {
     func refresh() async {
         guard busy == nil else { return }
         busy = "Loading installed packages…"
-        defer { busy = nil }
+        defer { busy = nil; loaded = true }
         do {
             packages = try await Brew.installed()
             loadError = nil
@@ -249,6 +251,8 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     if current == .discover {
                         InstallBrowser(query: text)
+                    } else if !model.loaded {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         table
                     }
