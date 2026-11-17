@@ -544,7 +544,12 @@ struct InstallBrowser: View {
 @main
 struct BodegaApp: App {
     @StateObject private var model = BrewModel()
-    init() { NSApplication.shared.setActivationPolicy(.regular) }
+    init() {
+        // macOS waits about 1.8 s before showing a tooltip; the tags explain themselves only there.
+        // 800 ms setting = tooltip about 1 s after the pointer stops (measured; AppKit adds about 0.2 s).
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 800])
+        NSApplication.shared.setActivationPolicy(.regular)
+    }
     var body: some Scene {
         WindowGroup("Bodega", id: "main") { ContentView().environmentObject(model) }
             .commands { BodegaCommands(model: model) }
