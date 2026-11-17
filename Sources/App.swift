@@ -388,7 +388,16 @@ struct ContentView: View {
                  + Text(v.count > 1 ? " " + v.dropFirst().joined(separator: " ") : "").foregroundColor(.secondary))
             }.width(120)
             TableColumn("Latest") { r in
-                Text(r.package.latest ?? "—").foregroundStyle(r.package.latest == nil ? .secondary : Color.orange)
+                let p = r.package
+                HStack(spacing: 4) {
+                    Text(p.latest ?? "—").foregroundStyle(p.latest == nil ? .secondary : Color.orange)
+                    if p.isDowngrade {
+                        TagLabel(tag: Tag(text: "downgrade", tone: .warning,
+                                          help: "Homebrew moved this package back to an older version on purpose. "
+                                              + "Update installs \(p.latest ?? "") in place of \(p.displayVersions.first ?? "")."))
+                            .accessibilityIdentifier("downgrade-\(p.name)")
+                    }
+                }
             }.width(120)
             TableColumn("") { r in
                 let p = r.package

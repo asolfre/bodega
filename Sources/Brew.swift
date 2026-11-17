@@ -23,6 +23,13 @@ struct Package: Identifiable, Hashable {
         guard let active, versions.contains(active) else { return versions }
         return [active] + versions.filter { $0 != active }
     }
+    /// brew calls it outdated, yet its latest version is older than every installed one: Homebrew moved the
+    /// formula back on purpose (openssl@3 went from 3.6 to the 3.5 LTS series).
+    // ponytail: plain numeric string compare; "1.0.0" sorts below "1.0.0-rc1", parse versions if that ever shows up.
+    var isDowngrade: Bool {
+        guard let latest else { return false }
+        return versions.allSatisfy { latest.compare($0, options: .numeric) == .orderedAscending }
+    }
 }
 
 /// A label on a Discover row: license, status, warnings. `help` is the hover text.

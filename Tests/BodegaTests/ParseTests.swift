@@ -22,6 +22,13 @@ import Testing
         #expect(Brew.parseList("", .cask, latest: [:]).isEmpty)
     }
 
+    @Test func downgradeOnlyWhenLatestIsOlderThanEveryInstalledVersion() {
+        let p = Brew.parseList("openssl@3 3.6.4 3.6.3 3.6.5\nopenssl@4 4.0.3\nopenjdk 27 25.0.2\ncoreutils 9.12\njq 1.8.1\n",
+                               .formula, latest: ["formula:openssl@3": "3.5.9", "formula:openssl@4": "4.1.0",
+                                                  "formula:openjdk": "27.0.1.0.3", "formula:coreutils": "9.12_1"])
+        #expect(p.map(\.isDowngrade) == [true, false, false, false, false])
+    }
+
     @Test func searchNoMatchIsEmpty() {
         // brew search exits 1 with empty stdout; the error text only goes to stderr (dropped).
         #expect(Brew.parseNames("").isEmpty)
