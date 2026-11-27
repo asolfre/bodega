@@ -300,90 +300,13 @@ struct ContentView: View {
             .scrollBounceBehavior(.basedOnSize)
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
         } detail: {
-            VSplitView {
-                VStack(spacing: 0) {
-                    if current == .discover {
-                        InstallBrowser(query: text)
-                    } else if !model.loaded {
-                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        HStack(spacing: 0) {
-                            table
-                            if showInspector, let pkg = selectedPackage {
-                                Divider()
-                                PackageInspector(package: pkg, close: {
-                                    showInspector = false
-                                    selection.removeAll()
-                                }, onUninstall: {
-                                    pendingUninstall = pkg
-                                })
-                                .frame(width: 260)
-                            }
-                        }
-                    }
-                    HStack {
-                        if model.busy != nil { ProgressView().controlSize(.small) }
-                        Text(status).font(.caption).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("status")
-                        if model.running != nil {
-                            Button("Cancel") { model.cancel() }.controlSize(.small)
-                                .accessibilityIdentifier("cancel-button")
-                        }
-                        Spacer()
-                        Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }
-                            .buttonStyle(.borderless).controlSize(.small)
-                            .accessibilityIdentifier("log-toggle")
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 6)
-                }
-                .frame(minHeight: 300)
-
-                if showLog {
-                    LogView(store: model.output)
-                    .frame(minHeight: 100)
-                }
-            }
-            .navigationTitle("Bodega")
-            .navigationSubtitle(current.rawValue)
+            detailPane
         }
         .onChange(of: selection) { _, new in showInspector = new.count == 1 }
         .frame(minWidth: 860, minHeight: 520)
         .searchable(text: $text, placement: .toolbar,
                     prompt: current == .discover ? "Search all Homebrew packages" : "Filter \(current.rawValue.lowercased())")
-        .toolbar {
-            ToolbarItemGroup {
-                // Always there, off outside Installed: adding and removing it scattered the toolbar and
-                // collapsed the search field to an icon.
-                Picker("View", selection: $asTree) {
-                    Label("List", systemImage: "list.bullet").tag(false)
-                    Label("Tree", systemImage: "list.bullet.indent").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .disabled(current != .installed)
-                .help("List, or tree: each package's dependencies under it (Installed only)")
-                .accessibilityIdentifier("view-mode")
-                Button { Task { await model.perform(["update"]) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                    .help("Fetch new versions (brew update)")
-                    .disabled(model.busy != nil)
-                    .accessibilityIdentifier("refresh-button")
-                Button { Task { await model.previewCleanup() } } label: { Label("Clean up…", systemImage: "trash") }
-                    .help("Remove old versions and caches (brew cleanup)")
-                    .disabled(model.busy != nil)
-                    .accessibilityIdentifier("cleanup-button")
-                Button { Task { await model.previewAutoremove() } } label: { Label("Autoremove…", systemImage: "xmark.bin") }
-                    .help("Remove unused dependencies (brew autoremove)")
-                    .disabled(model.busy != nil)
-                    .accessibilityIdentifier("autoremove-button")
-                Button { Task { await model.previewUpgrade() } } label: {
-                    Label(outdated == 0 ? "Update all…" : "Update all (\(outdated))…", systemImage: "arrow.up.circle")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.busy != nil)
-                .accessibilityIdentifier("update-all-button")
-            }
-        }
+        .toolbar { toolbarItems }
         // Not .task: closing the window would cancel it while brew update keeps running.
         .onAppear {
             AppDelegate.reopenWindow = { openWindow(id: "main") }
@@ -428,13 +351,7 @@ struct ContentView: View {
             }
             Button(names.isEmpty ? "OK" : "Cancel", role: .cancel) {}
         } message: { names in
-            if names.isEmpty {
-                Text("No unneeded dependency formulae found.")
-            } else {
-                let shown = names.prefix(15).joined(separator: ", ")
-                let more = names.count > 15 ? " and \(names.count - 15) more" : ""
-                Text("brew autoremove would uninstall \(names.count) \(names.count == 1 ? "formula" : "formulae"):\n\n\(shown)\(more)")
-            }
+            Text(autoremoveMessage(names))
         }
         .confirmationDialog("Uninstall \(pendingUninstall?.name ?? "")?",
                             isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
@@ -442,6 +359,97 @@ struct ContentView: View {
                 if let p = pendingUninstall { Task { await model.perform("uninstall", p.name, cask: p.kind == .cask) } }
             }
         }
+    }
+
+    private var detailPane: some View {
+        VSplitView {
+            VStack(spacing: 0) {
+                if current == .discover {
+                    InstallBrowser(query: text)
+                } else if !model.loaded {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    HStack(spacing: 0) {
+                        table
+                        if showInspector, let pkg = selectedPackage {
+                            Divider()
+                            PackageInspector(package: pkg, close: {
+                                showInspector = false
+                                selection.removeAll()
+                            }, onUninstall: {
+                                pendingUninstall = pkg
+                            })
+                            .frame(width: 260)
+                        }
+                    }
+                }
+                HStack {
+                    if model.busy != nil { ProgressView().controlSize(.small) }
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("status")
+                    if model.running != nil {
+                        Button("Cancel") { model.cancel() }.controlSize(.small)
+                            .accessibilityIdentifier("cancel-button")
+                    }
+                    Spacer()
+                    Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }
+                        .buttonStyle(.borderless).controlSize(.small)
+                        .accessibilityIdentifier("log-toggle")
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+            }
+            .frame(minHeight: 300)
+
+            if showLog {
+                LogView(store: model.output)
+                    .frame(minHeight: 100)
+            }
+        }
+        .navigationTitle("Bodega")
+        .navigationSubtitle(current.rawValue)
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        ToolbarItemGroup {
+            // Always there, off outside Installed: adding and removing it scattered the toolbar and
+            // collapsed the search field to an icon.
+            Picker("View", selection: $asTree) {
+                Label("List", systemImage: "list.bullet").tag(false)
+                Label("Tree", systemImage: "list.bullet.indent").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .disabled(current != .installed)
+            .help("List, or tree: each package's dependencies under it (Installed only)")
+            .accessibilityIdentifier("view-mode")
+            Button { Task { await model.perform(["update"]) } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                .help("Fetch new versions (brew update)")
+                .disabled(model.busy != nil)
+                .accessibilityIdentifier("refresh-button")
+            Button { Task { await model.previewCleanup() } } label: { Label("Clean up…", systemImage: "trash") }
+                .help("Remove old versions and caches (brew cleanup)")
+                .disabled(model.busy != nil)
+                .accessibilityIdentifier("cleanup-button")
+            Button { Task { await model.previewAutoremove() } } label: { Label("Autoremove…", systemImage: "xmark.bin") }
+                .help("Remove unused dependencies (brew autoremove)")
+                .disabled(model.busy != nil)
+                .accessibilityIdentifier("autoremove-button")
+            Button { Task { await model.previewUpgrade() } } label: {
+                Label(outdated == 0 ? "Update all…" : "Update all (\(outdated))…", systemImage: "arrow.up.circle")
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.busy != nil)
+            .accessibilityIdentifier("update-all-button")
+        }
+    }
+
+    private func autoremoveMessage(_ names: [String]) -> String {
+        guard !names.isEmpty else { return "No unneeded dependency formulae found." }
+        let shown = names.prefix(15).joined(separator: ", ")
+        let more = names.count > 15 ? " and \(names.count - 15) more" : ""
+        return "brew autoremove would uninstall \(names.count) \(names.count == 1 ? "formula" : "formulae"):\n\n\(shown)\(more)"
     }
 
     func row(_ item: SidebarItem) -> some View {
