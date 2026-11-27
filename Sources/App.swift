@@ -288,6 +288,29 @@ struct ContentView: View {
     }
 
     var body: some View {
+        splitView
+            .alert(model.autoremovePreview?.isEmpty == true ? "Nothing to autoremove" : "Autoremove unused dependencies?",
+                   isPresented: Binding<Bool>(get: { model.autoremovePreview != nil },
+                                              set: { if !$0 { model.autoremovePreview = nil } }),
+                   presenting: model.autoremovePreview) { names in
+                if !names.isEmpty {
+                    Button("Autoremove", role: .destructive) { Task { await model.perform(["autoremove"]) } }
+                }
+                Button(names.isEmpty ? "OK" : "Cancel", role: .cancel) {}
+            } message: { names in
+                Text(autoremoveMessage(names))
+            }
+            .confirmationDialog("Uninstall \(pendingUninstall?.name ?? "")?",
+                                isPresented: Binding<Bool>(get: { pendingUninstall != nil },
+                                                           set: { if !$0 { pendingUninstall = nil } })) {
+                Button("Uninstall", role: .destructive) {
+                    if let p = pendingUninstall { Task { await model.perform("uninstall", p.name, cask: p.kind == .cask) } }
+                }
+            }
+    }
+
+    /// Split from `body` so Swift 6.2 doesn't chain four overloaded presentation modifiers in one expression.
+    private var splitView: some View {
         NavigationSplitView {
             List(selection: $section) {
                 Section("Library") { row(.installed); row(.outdated); row(.pinned) }
@@ -324,7 +347,8 @@ struct ContentView: View {
             section = .discover
             DispatchQueue.main.async(execute: BodegaApp.focusSearch)  // after the toolbar shows Discover's field
         }
-        .sheet(isPresented: Binding(get: { model.upgradePreview != nil }, set: { if !$0 { model.upgradePreview = nil } })) {
+        .sheet(isPresented: Binding<Bool>(get: { model.upgradePreview != nil },
+                                          set: { if !$0 { model.upgradePreview = nil } })) {
             UpgradeSheet(preview: model.upgradePreview ?? UpgradePreview()) { confirmed in
                 let command = model.upgradePreview?.command ?? ["upgrade"]
                 model.upgradePreview = nil
@@ -332,7 +356,8 @@ struct ContentView: View {
             }
         }
         .alert(model.cleanupPreview?.count == 0 ? "Nothing to clean up" : "Clean up?",
-               isPresented: Binding(get: { model.cleanupPreview != nil }, set: { if !$0 { model.cleanupPreview = nil } }),
+               isPresented: Binding<Bool>(get: { model.cleanupPreview != nil },
+                                          set: { if !$0 { model.cleanupPreview = nil } }),
                presenting: model.cleanupPreview) { p in
             if p.count > 0 {
                 Button("Clean up", role: .destructive) { Task { await model.perform(["cleanup"]) } }
@@ -341,23 +366,6 @@ struct ContentView: View {
         } message: { p in
             Text("brew cleanup would remove \(p.count) items. \(p.summary ?? "")\n\n"
                  + "Brew also does this by itself every 30 days during installs and updates.")
-        }
-        .alert(model.autoremovePreview?.isEmpty == true ? "Nothing to autoremove" : "Autoremove unused dependencies?",
-               isPresented: Binding(get: { model.autoremovePreview != nil },
-                                    set: { if !$0 { model.autoremovePreview = nil } }),
-               presenting: model.autoremovePreview) { names in
-            if !names.isEmpty {
-                Button("Autoremove", role: .destructive) { Task { await model.perform(["autoremove"]) } }
-            }
-            Button(names.isEmpty ? "OK" : "Cancel", role: .cancel) {}
-        } message: { names in
-            Text(autoremoveMessage(names))
-        }
-        .confirmationDialog("Uninstall \(pendingUninstall?.name ?? "")?",
-                            isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
-            Button("Uninstall", role: .destructive) {
-                if let p = pendingUninstall { Task { await model.perform("uninstall", p.name, cask: p.kind == .cask) } }
-            }
         }
     }
 
