@@ -13,7 +13,7 @@ on as a tree; and see every dependency, dependent and source build before an ins
 Every action is a plain `brew` command; Bodega changes nothing that brew itself would not. No Electron,
 no web view.
 
-![Bodega's main window: installed packages as a tree, each one's dependencies under it, outdated versions in orange, dependencies nothing needs any more tagged "not needed", and the brew output below](docs/screenshot.png)
+![Bodega's main window: installed packages as a tree with sortable columns, outdated versions in orange, "not needed" tags, and the selected package's info panel with license, links, dates, dependencies, and actions](docs/screenshot.png)
 
 ![Discover: every Homebrew package matching "tree", with version, license, warnings such as deprecated or disabled, and links to the homepage and the GitHub project](docs/discover.png)
 
@@ -65,7 +65,11 @@ The SwiftPM build folder lives in `$TMPDIR/bodega-build`, outside the project. T
 | Update one package / Update all | `brew upgrade [name]`, after `brew upgrade --dry-run` |
 | Uninstall, pin, unpin | `brew uninstall`, `brew pin`, `brew unpin` |
 | Clean up | `brew cleanup`, after `brew cleanup -n` |
-| Cancel a running action | SIGINT to brew, same as Ctrl-C |
+| Autoremove unused dependencies (the "not needed" tag) | `brew autoremove`, after `brew autoremove -n` |
+| Sortable columns (Name, Type, Installed, Latest) | client-side sort in list and tree views |
+| Package details (click any installed row: description, links, tags, installed/updated dates, tap, dependencies, dependents, caveats, actions) | Homebrew's cached package list, `INSTALL_RECEIPT.json`, local tap `.rb` files, and `brew info --json=v2` on demand for caveats |
+| Collapsible, multi-line selectable log (`Show Log / Hide Log` in the status bar; starts closed on first launch and opens automatically if an action fails) | live `brew` stdout/stderr |
+| Cancel a running action or dry-run check | SIGINT to brew, same as Ctrl-C |
 
 Before an update, Bodega shows what brew would really do: the packages you asked for, dependencies it
 would upgrade or install, packages that use it and would be upgraded too, deprecated packages, brew's
@@ -142,9 +146,7 @@ tags: `v0.1.0` (list, update, uninstall, install), `v0.2.0` (search, pin, cleanu
 live log), `v0.2.1` (source builds found for every dependency, `brew --prefix`, log rotation, this README),
 `v0.2.2` (dependents, deprecated packages and brew's warnings in the update sheet; wording for any macOS),
 `v0.2.3` (first public release: license, CI, release downloads), `v0.2.4` (new icon: five casks),
-`v0.2.5` (brew update at launch and on Refresh), `v0.3.0` (sidebar, Discover with every Homebrew package,
-install checks, installed packages as a dependency tree), `v0.3.1` (bottles built for an older macOS count,
-as they do for brew: fewer false source-build warnings).
+`v0.2.5` (brew update at launch and on Refresh), `v0.3.0` (sidebar, Discover with every Homebrew package, install checks, installed packages as a dependency tree), `v0.3.1` (bottles built for an older macOS count, as they do for brew: fewer false source-build warnings), `v0.3.2` (status & initial-load spinners, collapsible selectable log closed by default, downgrade tag, faster tooltips, cancellable previews, installed-package info panel with caveats and actions, `brew autoremove`, sortable table columns, reopen window on Dock click).
 
 ## Releasing
 
@@ -171,10 +173,7 @@ the tests, builds the app on GitHub's runner and publishes `Bodega-<version>-mac
 - **Casks** with `auto_updates` or `version :latest` are not in Update all (no `--greedy`).
 - **Discover** lists Homebrew's official formulae and casks only (third-party taps are not in brew's
   cached package list).
-- **Closing the window**: a Dock click brings no window back; use File › New Bodega Window (⇧⌘N), or
-  ⌘N to open one on Discover.
-- Not included: taps, services, `brew doctor`, sudo prompts, removing the dependencies tagged
-  "not needed" (`brew autoremove`).
+- Not included: taps, services, `brew doctor`, sudo prompts.
 
 ## License
 

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Bodega
@@ -128,14 +129,17 @@ import Testing
     @Test func installReceipts() {
         // Formula receipt: a list; only direct dependencies count; tap-qualified names become short ids.
         let f = Brew.parseReceipt([
-            "installed_on_request": false, "source": ["tap": "homebrew/core"],
+            "installed_on_request": false, "poured_from_bottle": true, "time": 1_791_274_035,
+            "source": ["tap": "homebrew/core", "path": "/opt/homebrew/Library/Taps/x/y.rb"],
             "runtime_dependencies": [
                 ["full_name": "libgit2", "version": "1.9.7", "declared_directly": true],
                 ["full_name": "llhttp", "version": "9.4.3", "declared_directly": false],
                 ["full_name": "someone/tap/libssh2", "version": "1.11.1", "declared_directly": true],
             ],
         ])
-        #expect(f == Brew.Receipt(tap: "homebrew/core", deps: ["formula:libgit2", "formula:libssh2"], onRequest: false))
+        #expect(f == Brew.Receipt(tap: "homebrew/core", deps: ["formula:libgit2", "formula:libssh2"], onRequest: false,
+                                  time: Date(timeIntervalSince1970: 1_791_274_035), pouredFromBottle: true,
+                                  sourcePath: "/opt/homebrew/Library/Taps/x/y.rb"))
         // Older receipts do not mark direct ones: all of them count.
         #expect(Brew.parseReceipt(["runtime_dependencies": [["full_name": "zstd"], ["full_name": "xz"]]]).deps
                 == ["formula:zstd", "formula:xz"])
@@ -203,6 +207,17 @@ import Testing
         #expect(p.summary == "This operation would free approximately 17.6GB of disk space.")
         let none = Brew.parseCleanup("Warning: Skipping ada-url: most recent version 4.0.0_1 not installed\n")
         #expect(none.count == 0 && none.summary == nil)
+    }
+
+    @Test func autoremoveDryRun() {
+        let out = """
+        ==> Would autoremove 2 unneeded formulae:
+        go
+        some/tap/libfoo
+        """
+        #expect(Brew.parseAutoremove(out) == ["go", "some/tap/libfoo"])
+        #expect(Brew.parseAutoremove("==> Would autoremove 1 unneeded formula:\nlibbar\n") == ["libbar"])
+        #expect(Brew.parseAutoremove("").isEmpty)
     }
 
     @Test func upgradeDryRunSections() {
@@ -321,6 +336,21 @@ import Testing
         #expect(plain.isPlainSingleUpdate)
         plain.notes = ["pkgconf would be reinstalled due to macOS version mismatch"]
         #expect(!plain.isPlainSingleUpdate)  // brew would change something else too
+
+        // Multi-line warnings stay intact instead of cutting off after the first line.
+        let multi = Brew.parseUpgradeDryRun("", err: """
+        Warning: The following taps are not trusted:
+          derailed/k9s
+
+        Homebrew is currently ignoring formulae, casks and commands
+        Warning: The following dependents of upgraded formulae are outdated but will not
+        be upgraded because they are not bottled:
+          foo
+          bar
+        """)
+        #expect(multi.notes == [
+            "The following dependents of upgraded formulae are outdated but will not\nbe upgraded because they are not bottled:\n  foo\n  bar"
+        ])
     }
 
     @Test func sourceBuildOutput() {
@@ -341,5 +371,54 @@ import Testing
         #expect(p[0].latest == "2.0.0")
         #expect(latest["cask:headlamp"] == "0.46.0")
         #expect(latest["formula:headlamp"] == nil)
+    }
+
+    @Test func logViewSyncAppendsAndTrimsUTF16() {
+        let storage = NSTextStorage()
+        var firstID = 0, lastID = 0
+        func lines(_ pairs: (Int, String)...) -> [LogStore.Line] { pairs.map { LogStore.Line(id: $0.0, text: $0.1) } }
+
+        // Empty shows placeholder once, then becomes a no-op.
+        #expect(LogView.sync(storage, with: [], firstID: &firstID, lastID: &lastID))
+        #expect(storage.string == "brew output appears here")
+        #expect(!LogView.sync(storage, with: [], firstID: &firstID, lastID: &lastID))
+
+        // First lines replace placeholder; unchanged state is a no-op.
+        let batch1 = lines((1, "$ brew upgrade jq"), (2, "🍺  /opt/homebrew/Cellar/jq/1.8.1"))
+        #expect(LogView.sync(storage, with: batch1, firstID: &firstID, lastID: &lastID))
+        #expect(storage.string == "$ brew upgrade jq\n🍺  /opt/homebrew/Cellar/jq/1.8.1")
+        #expect(!LogView.sync(storage, with: batch1, firstID: &firstID, lastID: &lastID))
+
+        // Incremental append + trimming past a multi-byte emoji line (🍺 = 2 UTF-16 code units).
+        let batch2 = lines((3, "✔ exit 0"), (4, ""))
+        #expect(LogView.sync(storage, with: batch1 + batch2, firstID: &firstID, lastID: &lastID))
+        #expect(storage.string == "$ brew upgrade jq\n🍺  /opt/homebrew/Cellar/jq/1.8.1\n✔ exit 0\n")
+
+        let trimmed = lines((3, "✔ exit 0"), (4, ""), (5, "$ brew update"))
+        #expect(LogView.sync(storage, with: trimmed, firstID: &firstID, lastID: &lastID))
+        #expect(storage.string == "✔ exit 0\n\n$ brew update")
+    }
+
+    @Test func thirdPartyRubyMetadata() {
+        let rb = #"""
+        class K9s < Formula
+          desc "Kubernetes CLI \"In Style!\""
+          homepage "https://k9scli.io/"
+          license "Apache-2.0"
+          url "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s.tar.gz", verified: "github.com/derailed/k9s/"
+        end
+        """#
+        let r = Brew.parseRubyMeta(rb, name: "k9s", kind: .formula)
+        #expect(r.desc == #"Kubernetes CLI "In Style!""#)
+        #expect(r.homepage == "https://k9scli.io/")
+        #expect(r.forge == "https://github.com/derailed/k9s")
+        #expect(r.tags.map(\.text) == ["Apache-2.0"])
+    }
+
+    @Test func parseCaveatsForFormulaAndCask() {
+        #expect(Brew.parseCaveats(["formulae": [["caveats": "\n  Add to PATH\n\n"]]], kind: .formula) == "Add to PATH")
+        #expect(Brew.parseCaveats(["casks": [["caveats": "Requires Java"]]], kind: .cask) == "Requires Java")
+        #expect(Brew.parseCaveats(["formulae": [["caveats": NSNull()]]], kind: .formula).isEmpty)
+        #expect(Brew.parseCaveats([:], kind: .cask).isEmpty)
     }
 }

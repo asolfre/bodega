@@ -16,6 +16,14 @@ struct Package: Identifiable, Hashable {
     var deps: [String] = []
     /// False when brew installed it only as a dependency.
     var onRequest = true
+    var tap: String?
+    /// Earliest known install date (Cellar/Caskroom folder creation, or active receipt time).
+    var installedAt: Date?
+    /// When the active installed version was installed/updated (from its install receipt).
+    var updatedAt: Date?
+    var pouredFromBottle: Bool?
+    /// Local formula/cask `.rb` path from the receipt, used for third-party tap metadata.
+    var sourcePath: String?
     var id: String { "\(kind.rawValue):\(name)" }
     var version: String { versions.joined(separator: " ") }
     /// Active version first, then the others, so the version in use is always the first one shown.
@@ -151,30 +159,36 @@ enum Brew {
     }
 
     /// Exit status + stdout; stderr is dropped so brew's errors can never be parsed as data.
-    static func stdout(_ args: [String]) async throws -> (Int32, Data) {
-        let r = try await capture(args)
+    static func stdout(_ args: [String], onStart: @MainActor (Process) -> Void = { _ in }) async throws -> (Int32, Data) {
+        let r = try await capture(args, onStart: onStart)
         return (r.status, r.out)
     }
 
-    /// stdout and stderr kept apart. stderr is read on its own task so a full pipe cannot stall brew.
-    static func capture(_ args: [String]) async throws -> (status: Int32, out: Data, err: Data) {
-        try await Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: path)
-            p.arguments = args
-            var env = ProcessInfo.processInfo.environment
-            env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
-            p.environment = env
-            let out = Pipe(), err = Pipe()
-            p.standardOutput = out
-            p.standardError = err
-            try p.run()
-            let errHandle = err.fileHandleForReading
-            let errTask = Task.detached { errHandle.readDataToEndOfFile() }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            return (p.terminationStatus, data, await errTask.value)
-        }.value
+    /// stdout and stderr kept apart. Both pipes are read on detached tasks so a full pipe cannot stall brew.
+    /// `onStart` hands out the process before waiting for exit so Cancel can interrupt long dry runs.
+    static func capture(_ args: [String],
+                        onStart: @MainActor (Process) -> Void = { _ in }) async throws -> (status: Int32, out: Data, err: Data) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        p.environment = env
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        let exited = AsyncStream<Int32> { c in
+            p.terminationHandler = { c.yield($0.terminationStatus); c.finish() }
+        }
+        try p.run()
+        await onStart(p)
+        let outHandle = out.fileHandleForReading, errHandle = err.fileHandleForReading
+        async let outData = Task.detached { outHandle.readDataToEndOfFile() }.value
+        async let errData = Task.detached { errHandle.readDataToEndOfFile() }.value
+        let (data, errBytes) = await (outData, errData)
+        var status: Int32 = -1
+        for await s in exited { status = s }
+        return (status, data, errBytes)
     }
 
     static let cacheDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HOMEBREW_CACHE"]
@@ -363,10 +377,35 @@ enum Brew {
             default: break
             }
         }
-        p.notes = parseNames(err).compactMap { line in
-            line.hasPrefix("Warning: ") && !line.hasSuffix(":") ? String(line.dropFirst("Warning: ".count)) : nil
-        }
+        p.notes = parseWarnings(err)
         return p
+    }
+
+    /// Parses `Warning:` blocks from brew's stderr, keeping multi-line warnings intact and skipping
+    /// the boilerplate untrusted-taps block (already labelled in the table).
+    static func parseWarnings(_ err: String) -> [String] {
+        var notes: [String] = []
+        var current: [String]?
+        func flush() {
+            guard let lines = current else { return }
+            if !lines[0].hasPrefix("The following taps are not trusted:") {
+                notes.append(lines.joined(separator: "\n"))
+            }
+            current = nil
+        }
+        for raw in err.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("Error: ") {
+                flush()
+            } else if trimmed.hasPrefix("Warning: ") {
+                flush()
+                current = [String(trimmed.dropFirst("Warning: ".count))]
+            } else if current != nil {
+                current?.append(String(raw))
+            }
+        }
+        flush()
+        return notes
     }
 
     /// A formula compiles when it comes from an official tap and brew has no bottle it would pour on this Mac.
@@ -386,8 +425,8 @@ enum Brew {
         puts "checked"
         """
 
-    static func sourceBuilds(_ names: [String]) async -> [String]? {
-        guard let (_, out) = try? await stdout(["ruby", "-e", sourceBuildScript] + names) else { return nil }
+    static func sourceBuilds(_ names: [String], onStart: @MainActor (Process) -> Void = { _ in }) async -> [String]? {
+        guard let (_, out) = try? await stdout(["ruby", "-e", sourceBuildScript] + names, onStart: onStart) else { return nil }
         return parseSourceBuilds(String(decoding: out, as: UTF8.self))
     }
 
@@ -399,13 +438,15 @@ enum Brew {
     }
 
     /// Dry run of `command` plus the bottle check over every formula it would touch.
-    static func previewUpgrade(_ command: [String]) async -> UpgradePreview {
-        let r = try? await capture(command + ["--dry-run"])
+    static func previewUpgrade(_ command: [String],
+                               onStart: @MainActor (Process) -> Void = { _ in },
+                               isCancelled: @MainActor () -> Bool = { false }) async -> UpgradePreview {
+        let r = try? await capture(command + ["--dry-run"], onStart: onStart)
         var p = parseUpgradeDryRun(String(decoding: r?.out ?? Data(), as: UTF8.self),
                                    err: String(decoding: r?.err ?? Data(), as: UTF8.self))
         p.command = command
-        guard !p.names.isEmpty else { return p }
-        p.sourceBuilds = await sourceBuilds(p.names)
+        guard !p.names.isEmpty, await !isCancelled() else { return p }
+        p.sourceBuilds = await sourceBuilds(p.names, onStart: onStart)
         return p
     }
 
@@ -422,6 +463,21 @@ enum Brew {
         let summary = lines.first { $0.contains("would free approximately") }
         return CleanupPreview(count: lines.filter { $0.hasPrefix("Would remove:") }.count,
                               summary: summary.map { $0.replacingOccurrences(of: "==> ", with: "") })
+    }
+
+    /// `brew autoremove -n`: empty when nothing is unneeded; otherwise "==> Would autoremove N unneeded …:"
+    /// followed by one formula name per line (see Homebrew's `Cleanup.autoremove`).
+    static func parseAutoremove(_ out: String) -> [String] {
+        var inList = false
+        var names: [String] = []
+        for line in parseNames(out) {
+            if line.hasPrefix("==>") {
+                inList = line.contains("Would autoremove")
+                continue
+            }
+            if inList { names.append(line) }
+        }
+        return names
     }
 
     /// The list comes from `brew list --versions` (reads the Cellar/Caskroom), not `brew info --installed`,
@@ -453,23 +509,37 @@ enum Brew {
             pkgs[i].active = link.map { ($0 as NSString).lastPathComponent }
             pkgs[i].pinned = pinned.contains(name)
             let keg = pkgs[i].active ?? pkgs[i].versions.last ?? ""
-            let r = receipt(prefix.appendingPathComponent("Cellar/\(name)/\(keg)/INSTALL_RECEIPT.json"))
+            let dir = prefix.appendingPathComponent("Cellar/\(name)")
+            let r = receipt(dir.appendingPathComponent("\(keg)/INSTALL_RECEIPT.json"))
             pkgs[i].untrusted = isUntrusted(tap: r?.tap, name: name, trust: trust)
-            pkgs[i].deps = r?.deps ?? []
-            pkgs[i].onRequest = r?.onRequest ?? true
+            applyReceipt(r, dir: dir, to: &pkgs[i])
         }
         for i in pkgs.indices where pkgs[i].kind == .cask {
-            let r = receipt(prefix.appendingPathComponent("Caskroom/\(pkgs[i].name)/.metadata/INSTALL_RECEIPT.json"))
-            pkgs[i].deps = r?.deps ?? []
-            pkgs[i].onRequest = r?.onRequest ?? true
+            let dir = prefix.appendingPathComponent("Caskroom/\(pkgs[i].name)")
+            let r = receipt(dir.appendingPathComponent(".metadata/INSTALL_RECEIPT.json"))
+            applyReceipt(r, dir: dir, to: &pkgs[i])
         }
         return pkgs.sorted { $0.name < $1.name }
+    }
+
+    private static func applyReceipt(_ r: Receipt?, dir: URL, to pkg: inout Package) {
+        pkg.deps = r?.deps ?? []
+        pkg.onRequest = r?.onRequest ?? true
+        pkg.tap = r?.tap
+        pkg.updatedAt = r?.time
+        pkg.pouredFromBottle = r?.pouredFromBottle
+        pkg.sourcePath = r?.sourcePath
+        let birth = (try? dir.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+        pkg.installedAt = [birth, r?.time].compactMap { $0 }.min()
     }
 
     struct Receipt: Equatable {
         var tap: String?
         var deps: [String] = []
         var onRequest = true
+        var time: Date? = nil
+        var pouredFromBottle: Bool? = nil
+        var sourcePath: String? = nil
     }
 
     static func receipt(_ url: URL) -> Receipt? {
@@ -495,8 +565,55 @@ enum Brew {
         let runtime = json["runtime_dependencies"]
         let deps = (runtime as? [String: Any]).map { direct($0["formula"], .formula) + direct($0["cask"], .cask) }
             ?? direct(runtime, .formula)
-        return Receipt(tap: (json["source"] as? [String: Any])?["tap"] as? String, deps: deps,
-                       onRequest: json["installed_on_request"] as? Bool ?? true)
+        let source = json["source"] as? [String: Any]
+        let time = (json["time"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+        return Receipt(tap: source?["tap"] as? String, deps: deps,
+                       onRequest: json["installed_on_request"] as? Bool ?? true,
+                       time: time, pouredFromBottle: json["poured_from_bottle"] as? Bool,
+                       sourcePath: source?["path"] as? String)
+    }
+
+    /// Best-effort description, links and license from a third-party tap's local `.rb` file
+    /// (used for installed packages not in Homebrew's official cached catalog, including untrusted taps).
+    static func parseRubyMeta(_ text: String, name: String, kind: Package.Kind) -> SearchResult {
+        func field(_ key: String) -> String {
+            for raw in text.split(whereSeparator: \.isNewline) {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                guard line.hasPrefix("\(key) ") else { continue }
+                let rest = line.dropFirst(key.count).trimmingCharacters(in: .whitespaces)
+                guard let quote = rest.first, quote == "\"" || quote == "'" else { continue }
+                var out = "", escaped = false
+                for ch in rest.dropFirst() {
+                    if escaped { out.append(ch); escaped = false }
+                    else if ch == "\\" { escaped = true }
+                    else if ch == quote { return out }
+                    else { out.append(ch) }
+                }
+            }
+            return ""
+        }
+        let homepage = field("homepage")
+        var r = SearchResult(name: name, kind: kind, desc: field("desc"), homepage: homepage)
+        let license = field("license")
+        if !license.isEmpty { r.tags.append(Tag(text: license)) }
+        if !isForge(homepage) { r.forge = forgeProject(field("url")) ?? "" }
+        return r
+    }
+
+    /// Post-install caveats from `brew info --json=v2` (not present in Homebrew's cached catalog or receipts).
+    /// Returns nil if brew fails so transient errors are not cached as "no caveats"; skips untrusted taps.
+    static func caveats(_ p: Package) async -> String? {
+        guard !p.untrusted else { return nil }
+        let target = p.tap.map { $0.hasPrefix("homebrew/") ? p.name : "\($0)/\(p.name)" } ?? p.name
+        guard let json = try? await json(["info", "--json=v2", p.kind == .cask ? "--cask" : "--formula", target])
+        else { return nil }
+        return parseCaveats(json, kind: p.kind)
+    }
+
+    static func parseCaveats(_ json: [String: Any], kind: Package.Kind) -> String {
+        let key = kind == .cask ? "casks" : "formulae"
+        let raw = (json[key] as? [[String: Any]])?.first?["caveats"] as? String ?? ""
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Ids of the packages another installed package needs directly.

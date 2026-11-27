@@ -11,6 +11,14 @@ case "$1" in
     else
       echo "$(date +%T) FAKE brew $*" >> "$LOG"; echo "fake cleanup done"
     fi ;;
+  autoremove)
+    if [ "$2" = "-n" ]; then
+      sleep "${FAKE_DRYRUN_SECS:-0}"
+      echo "==> Would autoremove 1 unneeded formula:"
+      echo "fake-unused-dep"
+    else
+      echo "$(date +%T) FAKE brew $*" >> "$LOG"; echo "fake autoremove done"
+    fi ;;
   upgrade)
     case " $* " in
       *" --dry-run "*|*" -n "*) exec /opt/homebrew/bin/brew "$@" ;;

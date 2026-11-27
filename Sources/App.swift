@@ -10,17 +10,25 @@ final class BrewModel: ObservableObject {
     @Published var loadError: String?
     @Published var running: Process?
     @Published var cleanupPreview: CleanupPreview?
+    @Published var autoremovePreview: [String]?
     @Published var upgradePreview: UpgradePreview?
     /// False until the first load ends: the table shows a spinner instead of empty rows.
     @Published var loaded = false
     /// Homebrew's whole catalog for Discover/Install; read again each time it is shown, so a brew update shows up.
     @Published var catalog: [SearchResult]?
+    /// Session cache for `brew info` caveats keyed by Package.id (empty string = checked, none).
+    @Published var caveatsCache: [Package.ID: String] = [:]
     private var cancelled = false
     /// ⌘N with no window open: the window it opens starts on Discover.
     var openOnDiscover = false
 
     func loadCatalog() async {
         catalog = await Task.detached { Brew.catalog() }.value
+    }
+
+    func loadCaveats(_ p: Package) async {
+        guard caveatsCache[p.id] == nil, !p.untrusted else { return }
+        if let text = await Brew.caveats(p) { caveatsCache[p.id] = text }
     }
 
     /// When set, every refresh writes the listed packages here so the UI state can be diffed against `brew list`.
@@ -69,7 +77,8 @@ final class BrewModel: ObservableObject {
         if r.status != 0 && !cancelled { UserDefaults.standard.set(true, forKey: "showLog") }
         busy = nil
         await refresh()
-        // brew update rewrites the package list; reload it if Discover already read it.
+        // brew update/upgrade can change caveats or the package list.
+        if args.first == "update" || args.first == "upgrade" { caveatsCache.removeAll() }
         if args == ["update"], catalog != nil { await loadCatalog() }
     }
 
@@ -80,14 +89,29 @@ final class BrewModel: ObservableObject {
         running.interrupt()
     }
 
-    /// `brew cleanup -n` takes about a minute, so it holds the busy guard like any action.
+    /// `brew cleanup -n` takes about a minute, so it holds the busy guard and exposes Cancel like any action.
     /// stdout only: the "Warning: Skipping …" lines come on stderr and could split a "Would remove" line.
     func previewCleanup() async {
         guard busy == nil else { return }
         busy = "Checking what brew cleanup would remove…"
-        let out = (try? await Brew.stdout(["cleanup", "-n"]))?.1 ?? Data()
+        cancelled = false
+        let out = (try? await Brew.stdout(["cleanup", "-n"], onStart: { self.running = $0 }))?.1 ?? Data()
+        running = nil
         busy = nil
+        guard !cancelled else { return }
         cleanupPreview = Brew.parseCleanup(String(decoding: out, as: UTF8.self))
+    }
+
+    /// Dry run of `brew autoremove` (unneeded dependency formulae) before asking to remove them.
+    func previewAutoremove() async {
+        guard busy == nil else { return }
+        busy = "Checking what brew autoremove would remove…"
+        cancelled = false
+        let out = (try? await Brew.stdout(["autoremove", "-n"], onStart: { self.running = $0 }))?.1 ?? Data()
+        running = nil
+        busy = nil
+        guard !cancelled else { return }
+        autoremovePreview = Brew.parseAutoremove(String(decoding: out, as: UTF8.self))
     }
 
     /// Shows what the upgrade would really do before it runs. The dry run lists dependencies too
@@ -107,8 +131,12 @@ final class BrewModel: ObservableObject {
     private func preview(_ command: [String], single: Bool) async {
         guard busy == nil else { return }
         busy = "Checking what brew \(command.joined(separator: " ")) would do…"
-        let preview = await Brew.previewUpgrade(command)
+        cancelled = false
+        let preview = await Brew.previewUpgrade(command, onStart: { self.running = $0 },
+                                                isCancelled: { self.cancelled })
+        running = nil
         busy = nil
+        guard !cancelled else { return }
         if single, preview.isPlainSingleUpdate {
             await perform(command)
         } else {
@@ -196,20 +224,29 @@ struct TreeRow: Identifiable {
     let package: Package
     /// All installed packages by id; nil in the flat list (no children).
     let index: [String: Package]?
+    let sortOrder: [KeyPathComparator<TreeRow>]
 
-    init(package: Package, index: [String: Package]? = nil, parent: String? = nil) {
+    init(package: Package, index: [String: Package]? = nil, parent: String? = nil,
+         sortOrder: [KeyPathComparator<TreeRow>] = []) {
         self.package = package
         self.index = index
+        self.sortOrder = sortOrder
         id = parent.map { $0 + Self.separator + package.id } ?? package.id
     }
 
     var inTree: Bool { index != nil }
+    var sortName: String { package.name }
+    var sortType: String { package.kind.rawValue }
+    var sortInstalled: String { package.displayVersions.first ?? "" }
+    var sortLatest: String { package.latest ?? "" }
 
     var children: [TreeRow]? {
         guard let index else { return nil }
         let path = id.components(separatedBy: Self.separator)
-        let kids = package.deps.compactMap { index[$0] }.filter { !path.contains($0.id) }.sorted { $0.name < $1.name }
-        return kids.isEmpty ? nil : kids.map { TreeRow(package: $0, index: index, parent: id) }
+        let kids = package.deps.compactMap { index[$0] }.filter { !path.contains($0.id) }
+        guard !kids.isEmpty else { return nil }
+        let rows = kids.map { TreeRow(package: $0, index: index, parent: id, sortOrder: sortOrder) }
+        return sortOrder.isEmpty ? rows.sorted { $0.sortName < $1.sortName } : rows.sorted(using: sortOrder)
     }
 
     static func packageID(_ rowID: ID) -> Package.ID { rowID.components(separatedBy: separator).last ?? rowID }
@@ -217,10 +254,13 @@ struct TreeRow: Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject var model: BrewModel
+    @Environment(\.openWindow) private var openWindow
     @State private var section: SidebarItem? = .installed
     /// One toolbar field: it filters the list, or in Discover it searches Homebrew's catalog as you type.
     @State private var text = ""
     @State private var selection: Set<TreeRow.ID> = []
+    @State private var sortOrder = [KeyPathComparator(\TreeRow.sortName)]
+    @State private var showInspector = false
     @State private var pendingUninstall: Package?
     @AppStorage("installedAsTree") private var asTree = false
     @AppStorage("showLog") private var showLog = false
@@ -229,13 +269,22 @@ struct ContentView: View {
 
     /// The tree only while nothing is typed: a filter shows its matches as a flat list.
     var rows: [TreeRow] {
-        guard current == .installed, asTree, text.isEmpty else { return shown.map { TreeRow(package: $0) } }
+        guard current == .installed, asTree, text.isEmpty else {
+            return shown.map { TreeRow(package: $0) }.sorted(using: sortOrder)
+        }
         let index = Dictionary(model.packages.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        return Brew.treeRoots(model.packages).map { TreeRow(package: $0, index: index) }
+        return Brew.treeRoots(model.packages)
+            .map { TreeRow(package: $0, index: index, sortOrder: sortOrder) }
+            .sorted(using: sortOrder)
     }
 
     var shown: [Package] {
         model.packages.filter { current.includes($0) && (text.isEmpty || $0.name.localizedCaseInsensitiveContains(text)) }
+    }
+
+    var selectedPackage: Package? {
+        guard current != .discover, selection.count == 1, let id = selection.first else { return nil }
+        return model.packages.first { $0.id == TreeRow.packageID(id) }
     }
 
     var body: some View {
@@ -245,6 +294,10 @@ struct ContentView: View {
                 Section("By type") { row(.formulae); row(.casks) }
                 Section("Get more") { row(.discover) }
             }
+            // All 6 items fit well inside minHeight 520; disabling bounce/scroll keeps "Library"
+            // from sliding under the titlebar and triggering macOS's dark scrolled-edge hairline.
+            .scrollDisabled(true)
+            .scrollBounceBehavior(.basedOnSize)
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
         } detail: {
             VSplitView {
@@ -254,7 +307,19 @@ struct ContentView: View {
                     } else if !model.loaded {
                         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        table
+                        HStack(spacing: 0) {
+                            table
+                            if showInspector, let pkg = selectedPackage {
+                                Divider()
+                                PackageInspector(package: pkg, close: {
+                                    showInspector = false
+                                    selection.removeAll()
+                                }, onUninstall: {
+                                    pendingUninstall = pkg
+                                })
+                                .frame(width: 260)
+                            }
+                        }
                     }
                     HStack {
                         if model.busy != nil { ProgressView().controlSize(.small) }
@@ -282,6 +347,7 @@ struct ContentView: View {
             .navigationTitle("Bodega")
             .navigationSubtitle(current.rawValue)
         }
+        .onChange(of: selection) { _, new in showInspector = new.count == 1 }
         .frame(minWidth: 860, minHeight: 520)
         .searchable(text: $text, placement: .toolbar,
                     prompt: current == .discover ? "Search all Homebrew packages" : "Filter \(current.rawValue.lowercased())")
@@ -305,6 +371,10 @@ struct ContentView: View {
                     .help("Remove old versions and caches (brew cleanup)")
                     .disabled(model.busy != nil)
                     .accessibilityIdentifier("cleanup-button")
+                Button { Task { await model.previewAutoremove() } } label: { Label("Autoremove…", systemImage: "xmark.bin") }
+                    .help("Remove unused dependencies (brew autoremove)")
+                    .disabled(model.busy != nil)
+                    .accessibilityIdentifier("autoremove-button")
                 Button { Task { await model.previewUpgrade() } } label: {
                     Label(outdated == 0 ? "Update all…" : "Update all (\(outdated))…", systemImage: "arrow.up.circle")
                         .labelStyle(.titleAndIcon)
@@ -316,12 +386,16 @@ struct ContentView: View {
         }
         // Not .task: closing the window would cancel it while brew update keeps running.
         .onAppear {
+            AppDelegate.reopenWindow = { openWindow(id: "main") }
             if model.openOnDiscover {
                 model.openOnDiscover = false
                 section = .discover
                 DispatchQueue.main.async(execute: BodegaApp.focusSearch)
             }
-            Task { await model.refresh(); await model.perform(["update"]) }
+            if !model.loaded {
+                Task { await model.refresh(); await model.perform(["update"]) }
+            }
+            if model.catalog == nil { Task { await model.loadCatalog() } }
         }
         .focusedSceneValue(\.showDiscover) {
             section = .discover
@@ -345,6 +419,23 @@ struct ContentView: View {
             Text("brew cleanup would remove \(p.count) items. \(p.summary ?? "")\n\n"
                  + "Brew also does this by itself every 30 days during installs and updates.")
         }
+        .alert(model.autoremovePreview?.isEmpty == true ? "Nothing to autoremove" : "Autoremove unused dependencies?",
+               isPresented: Binding(get: { model.autoremovePreview != nil },
+                                    set: { if !$0 { model.autoremovePreview = nil } }),
+               presenting: model.autoremovePreview) { names in
+            if !names.isEmpty {
+                Button("Autoremove", role: .destructive) { Task { await model.perform(["autoremove"]) } }
+            }
+            Button(names.isEmpty ? "OK" : "Cancel", role: .cancel) {}
+        } message: { names in
+            if names.isEmpty {
+                Text("No unneeded dependency formulae found.")
+            } else {
+                let shown = names.prefix(15).joined(separator: ", ")
+                let more = names.count > 15 ? " and \(names.count - 15) more" : ""
+                Text("brew autoremove would uninstall \(names.count) \(names.count == 1 ? "formula" : "formulae"):\n\n\(shown)\(more)")
+            }
+        }
         .confirmationDialog("Uninstall \(pendingUninstall?.name ?? "")?",
                             isPresented: Binding(get: { pendingUninstall != nil }, set: { if !$0 { pendingUninstall = nil } })) {
             Button("Uninstall", role: .destructive) {
@@ -362,13 +453,13 @@ struct ContentView: View {
 
     var table: some View {
         let needed = Brew.needed(model.packages)
-        return Table(rows, children: \.children, selection: $selection) {
-            TableColumn("Name") { (r: TreeRow) in
+        return Table(rows, children: \.children, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Name", value: \.sortName) { (r: TreeRow) in
                 let p = r.package
                 HStack(spacing: 4) {
-                    Text(p.name)
+                    Text(p.name).lineLimit(1).truncationMode(.tail)
                     if r.inTree, let n = r.children?.count {
-                        Text("\(n) deps").font(.caption).foregroundStyle(.tertiary)
+                        Text("\(n) deps").font(.caption).foregroundStyle(.tertiary).lineLimit(1).fixedSize()
                     }
                     if !p.onRequest && !needed.contains(p.id) {
                         TagLabel(tag: Tag(text: "not needed", tone: .warning,
@@ -380,21 +471,27 @@ struct ContentView: View {
                             .accessibilityIdentifier("pinned-\(p.name)")
                     }
                     if p.untrusted {
-                        Text("untrusted tap").font(.caption2).foregroundStyle(.orange)
+                        Text("untrusted tap").font(.caption2).foregroundStyle(.orange).lineLimit(1).fixedSize()
                             .accessibilityIdentifier("untrusted-\(p.name)")
                     }
                 }
-            }
-            TableColumn("Type") { Text($0.package.kind.rawValue) }.width(70)
-            TableColumn("Installed") { r in
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
+            }.width(min: 180, ideal: 260)
+            TableColumn("Type", value: \.sortType) { Text($0.package.kind.rawValue).lineLimit(1) }.width(70)
+            TableColumn("Installed", value: \.sortInstalled) { r in
                 let v = r.package.displayVersions
                 (Text(v.first ?? "")
                  + Text(v.count > 1 ? " " + v.dropFirst().joined(separator: " ") : "").foregroundColor(.secondary))
-            }.width(120)
-            TableColumn("Latest") { r in
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipped()
+            }.width(min: 90, ideal: 120)
+            TableColumn("Latest", value: \.sortLatest) { r in
                 let p = r.package
                 HStack(spacing: 4) {
                     Text(p.latest ?? "—").foregroundStyle(p.latest == nil ? .secondary : Color.orange)
+                        .lineLimit(1).truncationMode(.tail)
                     if p.isDowngrade {
                         TagLabel(tag: Tag(text: "downgrade", tone: .warning,
                                           help: "Homebrew moved this package back to an older version on purpose. "
@@ -402,7 +499,9 @@ struct ContentView: View {
                             .accessibilityIdentifier("downgrade-\(p.name)")
                     }
                 }
-            }.width(120)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
+            }.width(min: 90, ideal: 120)
             TableColumn("") { r in
                 let p = r.package
                 HStack {
@@ -446,8 +545,219 @@ struct ContentView: View {
     var status: String {
         if let b = model.busy { return b }
         if let e = model.loadError { return e }
+        if !model.loaded { return "Loading installed packages…" }
         let f = model.packages.filter { $0.kind == .formula }.count
         return "\(f) formulae, \(model.packages.count - f) casks, \(outdated) outdated"
+    }
+}
+
+/// Details for the selected installed package: description, links, tags, dates, tap, dependencies,
+/// on-demand caveats from `brew info`, and row actions pinned at the bottom.
+struct PackageInspector: View {
+    @EnvironmentObject var model: BrewModel
+    let package: Package
+    let close: () -> Void
+    let onUninstall: () -> Void
+
+    private var meta: SearchResult? {
+        if let hit = model.catalog?.first(where: { $0.id == package.id }) { return hit }
+        guard let path = package.sourcePath, let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        return Brew.parseRubyMeta(text, name: package.name, kind: package.kind)
+    }
+
+    private var installedDeps: [String] {
+        let installed = Dictionary(model.packages.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+        return package.deps.compactMap { installed[$0] }.sorted()
+    }
+
+    private var usedBy: [String] {
+        model.packages.filter { $0.deps.contains(package.id) }.map(\.name).sorted()
+    }
+
+    private var showUpdatedDate: Bool {
+        guard let updated = package.updatedAt else { return false }
+        guard let installed = package.installedAt else { return true }
+        return updated.timeIntervalSince(installed) > 300
+    }
+
+    var body: some View {
+        let m = meta
+        let needed = Brew.needed(model.packages)
+        let caveats = model.caveatsCache[package.id] ?? ""
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(package.name).font(.title3).bold().textSelection(.enabled)
+                            Text(package.kind.rawValue).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(action: close) {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                                .padding(4).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Close info")
+                        .accessibilityIdentifier("inspector-close")
+                    }
+
+                    if let desc = m?.desc, !desc.isEmpty {
+                        Text(desc).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+
+                    let tags = statusTags(needed: needed, metaTags: m?.tags ?? [])
+                    if !tags.isEmpty {
+                        FlowTags { ForEach(tags, id: \.self) { TagLabel(tag: $0) } }
+                    }
+
+                    if let m, !m.homepage.isEmpty || !m.forge.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let u = URL(string: m.homepage), u.scheme != nil {
+                                Link("\(Brew.linkLabel(m.homepage)) ↗", destination: u).help(m.homepage)
+                            }
+                            if !m.forge.isEmpty, let u = URL(string: m.forge), u.scheme != nil {
+                                Link("\(Brew.siteName(m.forge)) ↗", destination: u).help(m.forge)
+                            }
+                        }
+                        .font(.callout)
+                    }
+
+                    Divider()
+
+                    Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
+                        row("Installed", package.displayVersions.joined(separator: ", "))
+                        if let latest = package.latest {
+                            GridRow(alignment: .firstTextBaseline) {
+                                Text("Latest").foregroundStyle(.secondary)
+                                Text(package.isDowngrade ? "\(latest) (downgrade)" : latest)
+                                    .foregroundStyle(.orange)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        if let d = package.installedAt {
+                            row("Installed on", d.formatted(date: .abbreviated, time: .omitted))
+                        }
+                        if showUpdatedDate, let d = package.updatedAt {
+                            row("Updated on", d.formatted(date: .abbreviated, time: .omitted))
+                        }
+                        if let tap = package.tap { row("Tap", tap) }
+                        if let bottle = package.pouredFromBottle {
+                            row("Install", bottle ? "Bottle" : "Built from source")
+                        }
+                        row("Reason", package.onRequest ? "Installed on request" : "Dependency")
+                        if !installedDeps.isEmpty { row("Needs", installedDeps.joined(separator: ", ")) }
+                        if !usedBy.isEmpty { row("Used by", usedBy.joined(separator: ", ")) }
+                    }
+                    .font(.callout)
+
+                    if !caveats.isEmpty {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Caveats").font(.caption).bold().foregroundStyle(.secondary)
+                            Text(caveats)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .accessibilityIdentifier("inspector-caveats")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+
+            Divider()
+
+            VStack(spacing: 6) {
+                if let latest = package.latest {
+                    Button { Task { await model.previewUpgrade(package) } } label: {
+                        Text("Update to \(latest)").lineLimit(1).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(package.pinned || model.busy != nil)
+                    .accessibilityIdentifier("inspector-update")
+                }
+                HStack(spacing: 8) {
+                    if package.kind == .formula {
+                        Button {
+                            Task { await model.perform(package.pinned ? "unpin" : "pin", package.name, cask: false) }
+                        } label: {
+                            Text(package.pinned ? "Unpin" : "Pin").frame(maxWidth: .infinity)
+                        }
+                        .disabled(model.busy != nil)
+                        .accessibilityIdentifier("inspector-pin")
+                    }
+                    Button(role: .destructive, action: onUninstall) {
+                        Text("Uninstall…").frame(maxWidth: .infinity)
+                    }
+                    .disabled(model.busy != nil)
+                    .accessibilityIdentifier("inspector-uninstall")
+                }
+            }
+            .padding(12)
+        }
+        .accessibilityIdentifier("package-inspector")
+        .task(id: package.id) {
+            guard model.caveatsCache[package.id] == nil, !package.untrusted else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            await model.loadCaveats(package)
+        }
+    }
+
+    private func statusTags(needed: Set<String>, metaTags: [Tag]) -> [Tag] {
+        var out = metaTags
+        if !package.onRequest && !needed.contains(package.id) {
+            out.append(Tag(text: "not needed", tone: .warning,
+                           help: "Installed as a dependency; nothing installed needs it now"))
+        }
+        if package.pinned { out.append(Tag(text: "pinned", help: "Skipped by Update all")) }
+        if package.untrusted { out.append(Tag(text: "untrusted tap", tone: .warning, help: "Tap is not trusted by brew")) }
+        return out
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: String) -> some View {
+        if !value.isEmpty {
+            GridRow(alignment: .firstTextBaseline) {
+                Text(label).foregroundStyle(.secondary)
+                Text(value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// Wraps TagLabel chips onto multiple lines inside narrow inspector widths.
+private struct FlowTags: Layout {
+    var spacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        layout(in: proposal.width ?? 240, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (sub, pt) in zip(subviews, layout(in: bounds.width, subviews: subviews).points) {
+            sub.place(at: CGPoint(x: bounds.minX + pt.x, y: bounds.minY + pt.y), proposal: .unspecified)
+        }
+    }
+
+    private func layout(in maxWidth: CGFloat, subviews: Subviews) -> (points: [CGPoint], size: CGSize) {
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, usedW: CGFloat = 0
+        var pts: [CGPoint] = []
+        for s in subviews {
+            let sz = s.sizeThatFits(.unspecified)
+            if x > 0 && x + sz.width > maxWidth { x = 0; y += rowH + spacing; rowH = 0 }
+            pts.append(CGPoint(x: x, y: y))
+            x += sz.width + spacing
+            usedW = max(usedW, x - spacing)
+            rowH = max(rowH, sz.height)
+        }
+        return (pts, CGSize(width: usedW, height: y + rowH))
     }
 }
 
@@ -545,8 +855,21 @@ struct InstallBrowser: View {
     }
 }
 
+/// Reopens the main window on Dock click when all windows were closed (without duplicating minimized windows).
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static var reopenWindow: (() -> Void)?
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag && !sender.windows.contains(where: { $0.isMiniaturized }) {
+            Task { @MainActor in Self.reopenWindow?() }
+        }
+        return true
+    }
+}
+
 @main
 struct BodegaApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = BrewModel()
     init() {
         // macOS waits about 1.8 s before showing a tooltip; the tags explain themselves only there.
@@ -581,8 +904,7 @@ struct BodegaCommands: Commands {
     @Environment(\.openWindow) var openWindow
 
     var body: some Commands {
-        // ⌘N goes to Discover, so New Bodega Window moves to ⇧⌘N. It stays: after the window is closed,
-        // it is the way back (a Dock click brings no window back).
+        // ⌘N goes to Discover, so New Bodega Window moves to ⇧⌘N.
         CommandGroup(replacing: .newItem) {
             Button("New Bodega Window") { openWindow(id: "main") }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
@@ -660,7 +982,11 @@ struct UpgradeSheet: View {
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(title) (\(lines.count))").bold()
-                ForEach(lines, id: \.self) { Text($0).font(.system(.caption, design: .monospaced)) }
+                ForEach(lines, id: \.self) {
+                Text($0).font(.system(.caption, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
             }
         }
     }
@@ -696,27 +1022,95 @@ final class LogStore: ObservableObject {
     }
 }
 
-struct LogView: View {
+/// Multi-line selectable read-only log backed by NSTextView (SwiftUI's LazyVStack only selects one Text
+/// line at a time, while one big SwiftUI Text re-typeset the whole log on every line).
+struct LogView: NSViewRepresentable {
     @ObservedObject var store: LogStore
 
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if store.lines.isEmpty { Text("brew output appears here") }
-                    ForEach(store.lines) { Text($0.text).id($0.id) }
-                }
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .accessibilityIdentifier("log")
-            }
-            .onChange(of: store.lines.last?.id) { _, id in
-                if let id { proxy.scrollTo(id, anchor: .bottom) }
-            }
-            // Shown again after Hide Log: start at the newest line, not the top.
-            .onAppear { if let id = store.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+    private static let placeholder = "brew output appears here"
+    private static let attrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedSystemFont(
+            ofSize: NSFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular),
+        .foregroundColor: NSColor.labelColor,
+    ]
+
+    final class Coordinator {
+        var firstID = 0
+        var lastID = 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.autohidesScrollers = true
+        if let tv = scroll.documentView as? NSTextView {
+            tv.isEditable = false
+            tv.isSelectable = true
+            tv.isRichText = false
+            tv.drawsBackground = false
+            tv.textContainerInset = NSSize(width: 8, height: 8)
+            tv.setAccessibilityIdentifier("log")
         }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? NSTextView, let storage = tv.textStorage else { return }
+        let atBottom = context.coordinator.lastID == 0
+            || scroll.contentView.bounds.maxY >= tv.bounds.maxY - 24
+        if Self.sync(storage, with: store.lines, firstID: &context.coordinator.firstID,
+                     lastID: &context.coordinator.lastID),
+           !store.lines.isEmpty, atBottom {
+            // Async so layout finishes first (especially when Show Log opens a fresh scroll view).
+            DispatchQueue.main.async { tv.scrollToEndOfDocument(nil) }
+        }
+    }
+
+    /// Incrementally appends new lines and trims dropped ones so selection and layout survive updates.
+    @discardableResult
+    static func sync(_ storage: NSTextStorage, with lines: [LogStore.Line],
+                     firstID: inout Int, lastID: inout Int) -> Bool {
+        guard let first = lines.first, let last = lines.last else {
+            guard lastID != 0 || storage.length == 0 else { return false }
+            storage.setAttributedString(NSAttributedString(string: placeholder, attributes: attrs))
+            firstID = 0; lastID = 0
+            return true
+        }
+        if first.id == firstID && last.id == lastID { return false }
+        let added = last.id - lastID
+        if lastID == 0 || added <= 0 || added >= lines.count {
+            storage.setAttributedString(NSAttributedString(string: lines.map(\.text).joined(separator: "\n"),
+                                                           attributes: attrs))
+        } else {
+            let chunk = "\n" + lines.suffix(added).map(\.text).joined(separator: "\n")
+            storage.beginEditing()
+            storage.append(NSAttributedString(string: chunk, attributes: attrs))
+            let dropped = first.id - firstID
+            if dropped > 0 {
+                let cut = prefixUTF16Length(droppingLines: dropped, in: storage.string)
+                storage.deleteCharacters(in: NSRange(location: 0, length: cut))
+            }
+            storage.endEditing()
+        }
+        firstID = first.id
+        lastID = last.id
+        return true
+    }
+
+    /// UTF-16 length of the first `count` lines including newlines (handles surrogate pairs like 🍺).
+    static func prefixUTF16Length(droppingLines count: Int, in text: String) -> Int {
+        guard count > 0 else { return 0 }
+        var seen = 0, len = 0
+        for unit in text.utf16 {
+            len += 1
+            if unit == 0x0A {
+                seen += 1
+                if seen == count { return len }
+            }
+        }
+        return len
     }
 }
